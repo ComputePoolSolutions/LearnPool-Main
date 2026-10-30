@@ -1,0 +1,1 @@
+import fs from 'node:fs';const p='client/src/App.jsx';let s=fs.readFileSync(p,'utf8');s=s.replace("setNotice={setNotice}/>)}:active==='reports'?", "setNotice={setNotice}/>):active==='reports'?");fs.writeFileSync(p,s);
