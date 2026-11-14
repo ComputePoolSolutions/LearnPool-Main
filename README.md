@@ -1,141 +1,548 @@
-# LearnPool
+# TASK: ANALYSE THE COMPLETE FIREBASE LEARNPOOL PROJECT AND CREATE A PROFESSIONAL README.md.
 
-LearnPool is a role-based learning platform for students, instructors, and administrators. This version uses Express, React, Node.js and **Firebase Firestore** as the database (it was MongoDB before).
+# 1. ABOUT THE PROJECT
 
-## Included workflows
+Write a professional project introduction.
 
-- One common sign-in page for everyone, accounts created by an administrator, bcrypt password storage, first-login password change, profile pictures, and role-based access
-- Course catalogue, enrollment management, modules, lessons, assessments, completion tracking, and course progress
-- Class scheduling, meeting links, and recordings
-- Assignment publishing, learner submissions by file or link, grading, and feedback
-- A private file library with validated uploads and authorized downloads
-- Internal messages, in-app notifications, and announcements
-- Personal to-dos, progress reports, study-time tracking, learning points, and a leaderboard
-- Completion certificates, authorized PDF downloads, public verification, revocation, and audit history
-- Admin account access management, enrollment oversight, announcements, audit logs, and system settings
+Project Name: LearnPool
 
+Description:
 
+LearnPool is a modern Learning Management System (LMS) designed to provide a connected learning environment for Students, Instructors, and Administrators.
 
-## Accounts, roles and sign-in
+The platform allows Students to access courses, complete assignments, track their learning progress, and obtain certificates after successful course completion and Instructor verification.
 
-- Everybody signs in on **one page** with email and password. The role (student, instructor, admin) is read from the database, never from the page or the email, and decides the dashboard: `/student/dashboard`, `/instructor/dashboard` or `/admin/dashboard`.
-- **Automatic student accounts:** a valid `@mlrit.ac.in` email that has no account yet is signed in with the email username as the password (`24r21a05fy@mlrit.ac.in` / `24r21a05fy`). LearnPool then creates the Student account, stores only a bcrypt hash and asks for a new password straight away. Existing accounts are never overwritten or duplicated, simultaneous first sign-ins create exactly one account, and other domains are refused (the exact domain is checked on the backend). Set `AUTO_PROVISION_STUDENTS=false` in `backend/.env` to switch this off.
-- **Instructors and admins are never created automatically.** An email address alone never grants either role. Admins create accounts and change roles in **Admin > User Management** (Add new user, change Student/Instructor, activate/deactivate, reset password, edit details, delete). Administrators are created with `npm run create-admin`.
-- After the first sign-in the backend blocks every other request until the initial password has been changed. The initial password is never regenerated.
-- Every user can upload, replace and remove a profile picture in Settings (JPG, PNG or WebP, up to 2 MB).
-- Existing accounts keep working and keep their roles.
-- `frontend/` is the maintained app. The older `client/` folder is not updated.
+Instructors can manage courses, upload learning materials, create assignments, evaluate Student submissions, monitor progress, and approve certificates.
 
-> Security note: automatic accounts rely on a predictable password. Anyone who knows a roll number can claim that account first. The forced password change limits the exposure, but if that matters to you, turn the feature off and let administrators create accounts instead.
+Administrators manage users, assign roles, control access, and oversee the learning workspace.
 
-## Which emails can be students and instructors
+Explain the project objectives, purpose, and major benefits.
 
-Any valid email address can hold a Student or Instructor account. Admins create accounts in **User Management** and choose the role; the initial password is the part of the email before `@`, and the user must change it at first sign-in. An admin can turn any student into an instructor (and back) whatever the email domain.
+# 2. COMPLETE PROJECT FEATURES
 
-Optional rules in `backend/.env`:
+Analyse the existing code and document all implemented features.
 
-| Setting | Meaning |
-|---|---|
-| `ALLOWED_EMAIL_DOMAINS=*` | any email (default). Use `@mlrit.ac.in,@gmail.com` to restrict accounts to those domains |
-| `AUTO_PROVISION_STUDENTS=true` | a first sign-in with the email username as the password creates a Student, but only for `AUTO_PROVISION_DOMAINS` (default `@mlrit.ac.in`) |
+Include the following sections wherever supported by the project.
 
-## Demo login mode
+## A. Authentication and Login System
 
-For testing and demos you can let anyone in with **any valid email and any non-empty password**. In `backend/.env`:
+Document the updated login functionality.
 
+Current expected login experience:
+
+- One common login page.
+- No manual Student, Instructor, or Admin selection.
+- Users enter their email address and password.
+- Automatic role identification.
+- Automatic dashboard redirection.
+- No public registration form.
+- Role-based access permissions.
+
+**Important login requirement:**
+
+My updated demo login functionality allows users to enter any email address and any non-empty password to access the application without traditional password verification.
+
+Document this clearly as DEMO LOGIN MODE.
+
+Explain:
+- How demo login works.
+- How a new demo user is handled.
+- How the user role is assigned.
+- How existing user roles are retrieved.
+- How users are redirected after login.
+- How demo login differs from production authentication.
+
+Do not falsely describe demo login as secure production authentication.
+
+If the project uses Firebase Authentication, explain the actual implementation, including anonymous authentication or other mechanisms if present.
+
+Clearly mention any limitations of demo authentication.
+
+## B. Role-Based Access Control
+
+Document the three user roles:
+
+**1. Student**
+- Access Student Dashboard.
+- View available courses.
+- Enrol in or access courses according to existing functionality.
+- View lessons and materials.
+- Submit assignments.
+- Track course progress.
+- Request course completion certificates.
+- View and download approved certificates.
+- Manage profile and profile picture.
+
+**2. Instructor**
+- Access Instructor Dashboard.
+- Create and manage courses.
+- Edit existing courses.
+- Upload learning materials.
+- Manage lessons.
+- Create and edit assignments.
+- Evaluate Student submissions.
+- Monitor Student progress.
+- Review certificate requests.
+- Approve or reject certificate requests.
+
+**3. Admin**
+- Access Admin Dashboard.
+- Manage users.
+- Assign Student and Instructor roles.
+- Change existing user roles.
+- Activate or deactivate accounts.
+- Manage platform access.
+- Monitor the application.
+- Manage certificates and revoke certificates where implemented.
+
+Explain how the application identifies roles and protects different dashboards.
+
+## C. Course Management
+
+Document:
+- Course creation.
+- Course listing.
+- Course details.
+- Course editing.
+- Course updating.
+- Course deletion.
+- Course descriptions.
+- Course thumbnails.
+- Lessons and learning materials.
+- Course completion tracking.
+
+Explain how Instructors manage courses and how Students access them.
+
+## D. Assignment Management
+
+Document:
+- Assignment creation.
+- Assignment editing.
+- Assignment updates.
+- Assignment deletion.
+- Assignment descriptions.
+- Due dates.
+- Maximum marks.
+- Assignment submissions.
+- Instructor evaluation.
+- Marks and feedback.
+
+Explain the Student and Instructor workflows.
+
+## E. Reports and Progress Tracking
+
+Document:
+- Student progress.
+- Course completion.
+- Assignment performance.
+- Marks and results.
+- Instructor reports.
+- Administrative reports.
+- Report editing and updating wherever implemented.
+
+## F. Certificate Management System
+
+Explain the complete certificate workflow.
+
+1. Student completes a course.
+2. Student becomes eligible for a certificate.
+3. Student requests a certificate.
+4. Certificate request is stored.
+5. Instructor receives the request.
+6. Instructor verifies course completion.
+7. Instructor approves or rejects the request.
+8. When approved, LearnPool generates a certificate.
+9. The certificate is available to the Student.
+10. Student can view and download the certificate as a PDF.
+
+Document these features:
+- Certificate requests.
+- Pending verification.
+- Instructor approval.
+- Certificate rejection.
+- PDF generation.
+- Student certificate dashboard.
+- Certificate download.
+- Unique certificate ID.
+- Certificate verification.
+- Certificate revocation, if implemented.
+
+Include an example certificate workflow.
+
+## G. Profile Management
+
+Document:
+- User profile.
+- Profile picture upload.
+- Profile picture preview.
+- Profile picture update.
+- Profile picture removal.
+- Persistent profile picture storage.
+- User information management.
+
+## H. Edit and Update Functionality
+
+Explain the application's CRUD operations.
+
+Document how authorized users can:
+- Create records.
+- View records.
+- Edit existing records.
+- Update records.
+- Delete records.
+
+Include applicable modules:
+- Courses.
+- Assignments.
+- Reports.
+- Lessons.
+- Learning materials.
+- User information.
+- Other implemented modules.
+
+Explain that editing updates the existing database record rather than creating duplicate records.
+
+# 3. TECHNOLOGY STACK
+
+Inspect the actual project dependencies and identify the technologies used.
+
+Document the actual stack, including relevant technologies such as:
+
+- Frontend framework.
+- Programming language.
+- Styling framework.
+- UI component libraries.
+- Firebase Authentication.
+- Cloud Firestore or Realtime Database.
+- Firebase Storage.
+- Firebase Hosting.
+- Firebase Cloud Functions.
+- PDF generation libraries.
+- Routing libraries.
+- Other dependencies.
+
+IMPORTANT:
+
+Do not assume that every Firebase service is being used.
+
+Only include technologies and services that are actually present in the project.
+
+Explain the purpose of each technology.
+
+# 4. FIREBASE CONFIGURATION
+
+Create a detailed Firebase integration section.
+
+Inspect the Firebase configuration files and explain:
+
+- Firebase project setup.
+- Firebase initialization.
+- Authentication configuration.
+- Firestore database integration.
+- Storage integration.
+- Cloud Functions, if used.
+- Firebase Hosting, if used.
+- Firebase Security Rules.
+
+Explain how frontend components communicate with Firebase.
+
+Document the actual database collections and their purposes.
+
+For example, investigate whether the project contains collections such as:
+
+- users
+- courses
+- assignments
+- submissions
+- reports
+- certificates
+- certificateRequests
+- lessons
+- announcements
+
+Only document collections that actually exist.
+
+For each collection, explain its purpose and important fields where possible.
+
+# 5. PROJECT FOLDER STRUCTURE
+
+Analyse the complete project directory and provide an accurate folder structure.
+
+Use a tree format.
+
+Example format:
+
+```text
+LearnPool/
+│
+├── public/
+├── src/
+│   ├── components/
+│   ├── pages/
+│   ├── dashboards/
+│   ├── services/
+│   ├── firebase/
+│   ├── hooks/
+│   ├── assets/
+│   └── styles/
+│
+├── package.json
+├── firebase.json
+├── firestore.rules
+├── storage.rules
+├── .env.example
+└── README.md
 ```
-DEMO_LOGIN_MODE=true
-DEMO_ALLOW_INSTRUCTORS=true
+
+IMPORTANT: This is only an example. Replace it with my actual project structure.
+
+Explain the purpose of the important folders and files.
+
+# 6. INSTALLATION AND SETUP GUIDE
+
+Provide complete step-by-step installation instructions.
+
+Include:
+
+### Prerequisites
+
+Identify the actual required software and versions, such as:
+- Node.js.
+- npm.
+- Git.
+- Firebase account.
+- VS Code or another editor.
+
+### Step 1: Clone the repository
+
+Provide the correct Git clone command using a placeholder repository URL.
+
+### Step 2: Open the project
+
+Provide the terminal commands.
+
+### Step 3: Install dependencies
+
+Use the correct package manager and commands based on my project.
+
+### Step 4: Configure Firebase
+
+Explain how to:
+- Create or select a Firebase project.
+- Enable the required Firebase services.
+- Register the web application.
+- Configure Firebase credentials.
+- Configure environment variables.
+- Set up Firestore.
+- Configure Firebase Storage if used.
+- Deploy security rules.
+
+Never include real API secrets, service account credentials, or private keys in the README.
+
+### Step 5: Start the application
+
+Inspect package.json and document the exact commands available in the project.
+
+For example:
+
+```bash
+npm install
+npm run dev
 ```
 
-- An email with no account becomes a **Student**. An existing account signs in with its **real role from the database**, so an admin can promote a demo student to instructor.
-- With `DEMO_ALLOW_INSTRUCTORS=true`, instructors can also sign in with any password. **Administrator accounts always need their real password**, so demo mode cannot take over an admin account (`DEMO_ALLOW_PRIVILEGED_ACCOUNTS=true` removes that, not recommended).
-- Demo users cannot reach Admin features, and only an admin can change roles.
-- It is **always off when `NODE_ENV=production`**. The login page shows a banner while it is on. Restart the backend after changing `.env`.
+Only include commands that actually work with my project.
 
-## Certificates
+### Step 6: Build the application
 
-Certificates are issued only after the course instructor verifies completion.
+Document the correct production build command.
 
-1. **Student:** finishes every lesson, then opens **Certificates** and clicks **Request certificate**. The status shows as Not eligible, Eligible, Pending verification, Approved or Rejected. A rejected request can be sent again.
-2. **Instructor (or admin):** opens **Certificates > Requests**, sees student name, email, course, completion % and completion date, and clicks **Review**. The review window re-checks the learner's real lesson progress, then the instructor approves (with optional remarks) or rejects (a reason is required). Only the course's own instructor or an admin can decide.
-3. **Approval** automatically creates certificate **LP-<year>-001**, **LP-<year>-002**, ... and a real **PDF** (A4 landscape, green border, LearnPool logo, student, course, instructor, completion and issue dates, certificate ID, verification link). The student is notified.
-4. **Student:** sees it under **My Certificates** (course, ID, issue date, View / Download). It is still there after signing out and in.
-5. **Verification:** `/verify-certificate/LP-2026-001` is public and shows validity, ID, student, course, instructor, issue date and status. It shows **Revoked** for revoked certificates and never shows email addresses.
-6. **Admin:** **Certificates** shows every request and certificate with search by student, course or certificate ID, status filters, details, full history, and **Revoke** (a reason is required). Revoked certificates can't be downloaded.
+For example:
 
-Duplicates are prevented: one open request per learner and course, one certificate per learner and course, and two simultaneous approvals issue only one. PDFs are kept in `backend/storage/certificates/` (not publicly served; downloads go through a signed-in check) and are rebuilt from the saved record if a file is missing. The old "admin issues a certificate manually" button is retired so that every certificate goes through instructor approval.
+```bash
+npm run build
+```
 
-## Editing and updating content
+Verify it against package.json.
 
-Anything you can create can be edited later, and saves go to the **same record** (the id never changes, nothing is duplicated). The backend checks the user's role and ownership on every update, and records `updatedAt` / `updatedBy`.
+# 7. FIREBASE DEPLOYMENT GUIDE
 
-| Content | Who can edit | Notes |
-|---|---|---|
-| Courses (name, description, subject, level, duration, status, cover image) | the course's instructor, admin | Delete archives the course; lessons, submissions and results are kept |
-| Modules, lessons (title, link, replacement upload), topics | course instructor, admin | |
-| Assessments and questions | course instructor, admin | After learners have attempted it, questions can only be reworded |
-| Assignments (title, instructions, due date, points, status, course) | course instructor, admin | Submissions are kept; points are locked once something is graded; assignments with submissions cannot be deleted; learners are told when the due date changes |
-| Classes, announcements (admin), files (name, category, description), to-dos | owner / instructor / admin | |
-| Report notes (title, summary, period, course) | the author, admin | The progress figures on the Reports page are calculated automatically and stay read-only; students cannot change instructor reports |
-| Student / instructor details (name, email, phone) | admin | Email must stay on `@mlrit.ac.in` |
+If my project uses Firebase Hosting or other deployable Firebase services, document deployment instructions.
 
-Forms open pre-filled, warn before you discard unsaved changes, and deletions ask for confirmation.
+Include relevant commands such as:
 
-**Backups:** run `npm run backup` in `backend` to save every collection to `backend/backups/` before big changes. No data migration is needed for this version: new fields are optional.
+```bash
+npm install -g firebase-tools
+firebase login
+firebase init
+npm run build
+firebase deploy
+```
 
-## Requirements
+Explain:
+- Firebase CLI installation.
+- Firebase login.
+- Project selection.
+- Hosting configuration.
+- Deployment.
+- Firestore rules deployment.
+- Storage rules deployment.
+- Cloud Functions deployment, if used.
 
-- Node.js 20 or newer
-- A Firebase project with Cloud Firestore enabled (Firebase console > Build > Firestore Database > Create database)
+Do not instruct users to overwrite an existing Firebase configuration unnecessarily.
 
-## Run locally
+Use commands appropriate to the actual project.
 
-1. Firebase setup: in the Firebase console open Project settings > Service accounts > Generate new private key. Save the file as `backend/serviceAccountKey.json` (it is git-ignored). Hosting providers can use `FIREBASE_SERVICE_ACCOUNT_JSON` instead; see `backend/.env.example`.
-2. Copy `backend/.env.example` to `backend/.env` and set a unique random `JWT_SECRET` of at least 32 characters. Keep `.env` private.
-3. In `backend`, run `npm install`, then `npm run dev`. You should see `Firestore connected`.
-4. In a second terminal, in `frontend`, run `npm install`, then `npm run dev`.
-5. Open the Vite URL shown in the frontend terminal (usually `http://localhost:5173`).
-6. To create the first administrator, set `ADMIN_NAME`, `ADMIN_EMAIL`, and `ADMIN_PASSWORD` (at least 12 characters) in the backend environment and run `npm run create-admin` from `backend`. This is a one-time setup command; the password is stored as a bcrypt hash.
+# 8. ENVIRONMENT VARIABLES
 
-The client expects the API at `http://localhost:5000/api`. For another API host, set `VITE_API_URL` in `frontend/.env` to the API base URL including `/api`. Configure `CLIENT_ORIGIN` and `PUBLIC_APP_URL` for your deployment host. Build the static client with `npm run build` from `frontend`.
+Inspect how the application manages Firebase configuration.
 
-## Project layout
+If environment variables are used, create a documented `.env.example` section.
 
-- `frontend/` - React single-page application built with Vite
-- `backend/` - Express API, Firestore data layer and models, authentication middleware, and local file storage
-- `backend/routes/` - resource-specific API routes
-- `backend/models/` - model definitions (same schemas as before)
-- `backend/db/` - the Firestore data layer (see below)
-- `firestore.rules` - deny-all client rules (all access goes through the backend)
+Example:
 
-## Security notes
+```env
+VITE_FIREBASE_API_KEY=your_api_key
+VITE_FIREBASE_AUTH_DOMAIN=your_project.firebaseapp.com
+VITE_FIREBASE_PROJECT_ID=your_project_id
+VITE_FIREBASE_STORAGE_BUCKET=your_storage_bucket
+VITE_FIREBASE_MESSAGING_SENDER_ID=your_sender_id
+VITE_FIREBASE_APP_ID=your_app_id
+```
 
-- Never put production secrets in source control. The original ZIP included an `.env`; it is omitted from this rebuilt archive. Use your own local values from `.env.example`.
-- Roles are checked by API middleware and resource ownership checks. The browser only controls which navigation items are shown.
-- Instructor accounts wait for administrator approval. An administrator can approve the account from User management.
-- Library and assignment uploads are limited to 20 MB. Lesson uploads are limited to 100 MB. File extensions are validated on the server.
-- Library, lesson, and submission files are served through authenticated endpoints.
-- Certificate issue and revocation are admin-only. Course certificates require a learner to be enrolled and complete every course lesson. Public verification returns only fields intended for public display.
+Adapt the variable names to the actual project.
 
-## Integration notes
+Explain:
+- Where to obtain the values.
+- How to configure the environment file.
+- Why real credentials should not be committed to GitHub.
+- Which Firebase credentials are public client configuration and which are private secrets.
 
-Live and recorded classes use instructor-provided meeting and recording URLs; LearnPool does not connect directly to a conferencing vendor. Email delivery is optional and requires SMTP settings. Uploaded files are still stored locally under `backend/uploads` (Firebase Storage is not used); use persistent disk or move the storage adapter to object storage before deploying multiple API instances.
+# 9. DATABASE STRUCTURE
 
-## Firestore data layer
+Document the actual Firebase database structure.
 
-`backend/db/` is a small Mongoose-compatible layer on top of `firebase-admin`, so the routes and models read the same as before (`find`, `findOne`, `findById`, `create`, `save`, `populate`, `select`, `sort`, `limit`, `lean`, `updateOne`, ...). Each model is stored in a collection named like the old MongoDB one (`users`, `courses`, `modules`, `lectures`, `livesessions`, `topics`, `tests`, `results`, `progresses`, `discussions`, `lmsitems`).
+Include:
+- Collection names.
+- Document relationships.
+- Important fields.
+- User role storage.
+- Course information.
+- Assignment information.
+- Submission information.
+- Certificate request information.
+- Certificate information.
+- Profile information.
 
-Things that differ from MongoDB and are worth knowing:
+Provide example document structures only when supported by the existing schema.
 
-- Firestore has no joins, so `populate()` reads the referenced documents by id and attaches them.
-- Only one simple condition of a query is sent to Firestore; the rest of the filter is applied in the backend. This avoids composite indexes and works well for classroom-sized data. For very large collections, add dedicated queries or indexes.
-- Unique rules (email, teacher code, live-session room, one progress row per lesson, one active certificate per course) are checked before saving, which is not atomic under heavy simultaneous writes. Counters such as points use atomic increments.
-- Regular-expression search runs in the backend (it scans the matching collection).
-- IDs are still 24-character hex strings.
+Do not invent fields that are not implemented.
 
-Run `npm test` in `backend` for an offline smoke test of the data layer (no Firebase needed). To try everything locally without a cloud project, use the Firestore emulator (`firebase emulators:start --only firestore`, then set `FIRESTORE_EMULATOR_HOST=127.0.0.1:8080` and `FIREBASE_PROJECT_ID=learnpool-local`).
+# 10. USER WORKFLOWS
 
-### Moving existing MongoDB data
+Create separate workflow explanations.
 
-If your old database has data worth keeping, run once from `backend`: `npm install --no-save mongodb`, then `MONGO_URI="mongodb://..." npm run migrate:mongo`. MongoDB is only read; references keep working because ids are preserved.
+### Student Workflow
+
+Login → Student Dashboard → Browse Courses → Access Course → Complete Lessons → Submit Assignments → Track Progress → Request Certificate → Instructor Approval → Download Certificate.
+
+### Instructor Workflow
+
+Login → Instructor Dashboard → Create Course → Upload Materials → Create Assignments → Review Submissions → Evaluate Students → Review Certificate Requests → Approve Certificates.
+
+### Admin Workflow
+
+Login → Admin Dashboard → User Management → Assign Roles → Manage Accounts → Monitor Platform → Manage Certificates.
+
+Explain each workflow clearly.
+
+# 11. SECURITY AND LIMITATIONS
+
+Document:
+- Authentication mode.
+- Role-based access.
+- Firebase Security Rules.
+- Database permissions.
+- Storage permissions.
+- Certificate authorization.
+- File upload restrictions.
+- Demo login limitations.
+- Production deployment considerations.
+
+Clearly distinguish between features actually implemented and features that are only planned.
+
+If DEMO LOGIN MODE accepts any email and password, explicitly state that it is intended for demonstration/testing and must not be treated as secure production authentication.
+
+# 12. SCREENSHOTS AND UI DOCUMENTATION
+
+If screenshots already exist in the project, identify suitable ones and include their relative paths in the README.
+
+Document important pages:
+- Login page.
+- Student Dashboard.
+- Instructor Dashboard.
+- Admin Dashboard.
+- Course Management.
+- Assignment Management.
+- Certificate Management.
+- My Certificates.
+- User Profile.
+
+Do not invent screenshot filenames.
+
+# 13. CONTRIBUTION AND FUTURE ENHANCEMENTS
+
+Add a professional section explaining how developers can contribute.
+
+Include potential future enhancements as suggestions, clearly separated from currently implemented functionality.
+
+# 14. README FORMATTING
+
+Make the README professional and suitable for GitHub.
+
+Use:
+- Clear Markdown headings.
+- Table of contents.
+- Feature descriptions.
+- Tables where appropriate.
+- Code blocks for commands.
+- Architecture explanation.
+- Project folder tree.
+- Installation instructions.
+- Firebase configuration.
+- Deployment instructions.
+- Troubleshooting.
+- Security notes.
+
+Add GitHub badges only when their targets and statuses are accurate.
+
+Include a suitable project title and introduction.
+
+# 15. FINAL TASK
+
+After completely analysing the project:
+
+1. Create or update the actual `README.md` file in the root directory.
+2. Do not merely print the README in the chat.
+3. Make sure all installation commands are correct.
+4. Make sure all Firebase configuration instructions match the existing implementation.
+5. Make sure the documented features actually exist.
+6. Clearly label demo features and production limitations.
+7. Do not expose private credentials.
+8. Do not change the application's source code unnecessarily.
+9. Check the README for broken paths, incorrect filenames, and inaccurate commands.
+
+Finally, provide a summary of:
+- Project architecture.
+- Implemented features.
+- Firebase services used.
+- Installation commands.
+- Development commands.
+- Production build commands.
+- Deployment commands.
+- README.md file location.
+
+MY MAIN REQUIREMENT:
+
+I want a complete, detailed, professional README.md for my Firebase-based LearnPool Learning Management System that explains the project from beginning to end, including all updated features, demo login functionality, Student/Instructor/Admin roles, courses, assignments, editing functionality, reports, certificate verification and PDF downloads, profile management, Firebase configuration, database structure, installation, running commands, and deployment.
+
+The README must accurately describe my actual project after inspecting all its files.
