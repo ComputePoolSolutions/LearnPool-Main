@@ -1,4 +1,4 @@
-const mongoose = require('mongoose');
+const mongoose = require('../db');
 
 const questionSchema = new mongoose.Schema({
   questionText: { type: String, required: true },
@@ -17,7 +17,8 @@ const testSchema = new mongoose.Schema({
   isAdaptive: { type: Boolean, default: false },
   resultsPublished: { type: Boolean, default: false },
   questions: [questionSchema],
-  module: { type: mongoose.Schema.Types.ObjectId, ref: 'Module', required: true }
+  module: { type: mongoose.Schema.Types.ObjectId, ref: 'Module', required: true },
+  updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { timestamps: true });
 
 module.exports = mongoose.model('Test', testSchema);

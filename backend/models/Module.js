@@ -1,4 +1,4 @@
-const mongoose = require('mongoose');
+const mongoose = require('../db');
 
 const moduleSchema = new mongoose.Schema({
   title: { type: String, required: true },
@@ -6,7 +6,8 @@ const moduleSchema = new mongoose.Schema({
   lectures: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Lecture' }],
   liveSessions: [{ type: mongoose.Schema.Types.ObjectId, ref: 'LiveSession' }],
   tests: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Test' }],
-  topics: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Topic' }]
+  topics: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Topic' }],
+  updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { timestamps: true });
 
 module.exports = mongoose.model('Module', moduleSchema);

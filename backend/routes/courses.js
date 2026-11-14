@@ -3,6 +3,7 @@ const Course = require('../models/Course');
 const User = require('../models/User');
 const { protect, authorize } = require('../middleware/auth');
 
+const audit = require('../utils/audit');
 const router = express.Router();
 
 // @desc    Get all courses
@@ -126,9 +127,13 @@ router.get('/:id', protect, async (req, res) => {
 // @access  Private (Faculty/Admin)
 router.post('/', protect, authorize('faculty', 'admin'), async (req, res) => {
   try {
-    const { title, description, category, level } = req.body;
+    const { title, description, category, level, duration, thumbnail } = req.body;
     if (!title || !description) return res.status(400).json({ success:false, message:'Course name and description are required.' });
-    const course = await Course.create({ title:String(title).trim().slice(0,160), description:String(description).trim().slice(0,3000), category:String(category||'').slice(0,80), level:String(level||'Beginner'), faculty:req.user.id });
+    const cover = String(thumbnail || '').trim();
+    let coverOk = cover === '';
+    if (!coverOk) { try { coverOk = ['http:', 'https:'].includes(new URL(cover).protocol) && cover.length <= 500; } catch { coverOk = false; } }
+    if (!coverOk) return res.status(400).json({ success:false, message:'The cover image must be a valid http(s) link.' });
+    const course = await Course.create({ title:String(title).trim().slice(0,160), description:String(description).trim().slice(0,3000), category:String(category||'').slice(0,80), level:['Beginner','Intermediate','Advanced'].includes(level)?level:'Beginner', duration:String(duration||'').trim().slice(0,60), thumbnail:cover, faculty:req.user.id });
     res.status(201).json({ success: true, data: course });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -138,30 +143,41 @@ router.post('/', protect, authorize('faculty', 'admin'), async (req, res) => {
 // @desc    Update course
 // @route   PUT /api/courses/:id
 // @access  Private (Faculty/Admin)
-router.put('/:id', protect, authorize('faculty', 'admin'), async (req, res) => {
+router.put('/:id', protect, authorize('faculty', 'admin'), async (req, res, next) => {
   try {
-    let course = await Course.findById(req.params.id);
-
-    if (!course) {
-      return res.status(404).json({ success: false, message: 'Course not found' });
-    }
-
-    // Make sure user is course owner
-    if (course.faculty.toString() !== req.user.id && req.user.role !== 'admin') {
+    const course = await Course.findById(req.params.id);
+    if (!course) return res.status(404).json({ success: false, message: 'Course not found' });
+    // Only the course's own instructor (or an admin) may edit it.
+    if (String(course.faculty) !== String(req.user._id) && req.user.role !== 'admin') {
       return res.status(403).json({ success: false, message: 'Not authorized to update this course' });
     }
-
-    const updates={};
-    for(const key of ['title','description','category','level','status','thumbnail'])if(req.body[key]!==undefined)updates[key]=req.body[key];
-    course = await Course.findByIdAndUpdate(req.params.id, updates, {
-      new: true,
-      runValidators: true
-    });
-
-    res.status(200).json({ success: true, data: course });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
+    const b = req.body || {};
+    const errors = [];
+    const text = (key, min, max, label) => {
+      if (b[key] === undefined) return;
+      const v = String(b[key]).trim();
+      if (v.length < min || v.length > max) errors.push(`${label} must be ${min ? `${min}-` : 'up to '}${max} characters.`);
+      else course[key] = v;
+    };
+    text('title', 2, 160, 'Course name');
+    text('description', 1, 3000, 'Description');
+    text('category', 0, 80, 'Subject area');
+    text('duration', 0, 60, 'Duration');
+    if (b.level !== undefined) { if (['Beginner', 'Intermediate', 'Advanced'].includes(b.level)) course.level = b.level; else errors.push('Choose a valid level.'); }
+    if (b.status !== undefined) { if (['draft', 'published', 'archived'].includes(b.status)) course.status = b.status; else errors.push('Choose a valid status.'); }
+    if (b.thumbnail !== undefined) {
+      const v = String(b.thumbnail).trim();
+      let valid = v === '' || (v.startsWith('/uploads/') && v.length <= 500);
+      if (!valid) { try { const u = new URL(v); valid = ['http:', 'https:'].includes(u.protocol) && v.length <= 500; } catch { valid = false; } }
+      if (valid) course.thumbnail = v; else errors.push('The cover image must be a valid http(s) link.');
+    }
+    if (errors.length) return res.status(400).json({ success: false, message: errors.join(' ') });
+    course.updatedBy = req.user._id;
+    await course.save();
+    await audit(req.user, { action: 'course.updated', entityId: String(course._id), title: course.title });
+    await course.populate('faculty', 'name');
+    res.status(200).json({ success: true, message: 'Course updated.', data: course });
+  } catch (err) { next(err); }
 });
 
 // @desc    Delete course

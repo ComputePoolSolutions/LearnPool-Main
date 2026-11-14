@@ -10,6 +10,7 @@ const LiveSession = require('../models/LiveSession');
 const Topic = require('../models/Topic');
 const { protect, authorize } = require('../middleware/auth');
 
+const audit = require('../utils/audit');
 const router = express.Router();
 
 // Multer setup for file uploads
@@ -301,6 +302,66 @@ router.get('/lectures/:lectureId/resource', protect, async (req,res,next)=>{
     const filename=path.basename(lecture.fileUrl);
     return res.download(path.join(lessonDir,filename),filename);
   }catch(e){next(e)}
+});
+
+// ---- Editing: modules, lessons and topics ------------------------------------------------------
+const ownsCourse = (course, user) => course && (String(course.faculty) === String(user._id) || user.role === 'admin');
+const cleanTitle = value => { const v = String(value || '').trim(); return v.length >= 2 && v.length <= 160 ? v : null; };
+
+// @route   PUT /api/modules/lectures/:lectureId   (title, link, or a replacement upload)
+router.put('/lectures/:lectureId', protect, authorize('faculty', 'admin'), parseLessonUpload, async (req, res, next) => {
+  try {
+    const lecture = await Lecture.findById(req.params.lectureId);
+    if (!lecture) return res.status(404).json({ success: false, message: 'Lesson not found' });
+    const mod = await Module.findById(lecture.module).populate('course');
+    if (!mod || !ownsCourse(mod.course, req.user)) return res.status(403).json({ success: false, message: 'Not authorized' });
+    const dropOldFile = () => { if (lecture.fileType !== 'external/link' && String(lecture.fileUrl).startsWith('/uploads/learning/')) { try { fs.unlinkSync(path.join(lessonDir, path.basename(lecture.fileUrl))); } catch { /* already gone */ } } };
+    if (req.body.title !== undefined) { const t = cleanTitle(req.body.title); if (!t) return res.status(400).json({ success: false, message: 'Lesson title must be 2-160 characters.' }); lecture.title = t; }
+    if (req.file) {
+      dropOldFile();
+      lecture.fileUrl = `/uploads/learning/${req.file.filename}`; lecture.fileType = req.file.mimetype;
+    } else if (req.body.fileUrl !== undefined && req.body.fileUrl !== '' && req.body.fileUrl !== lecture.fileUrl) {
+      if (!validHttpUrl(req.body.fileUrl)) return res.status(400).json({ success: false, message: 'Enter a valid http(s) resource link.' });
+      dropOldFile();
+      lecture.fileUrl = req.body.fileUrl; lecture.fileType = 'external/link';
+    }
+    lecture.updatedBy = req.user._id;
+    await lecture.save();
+    await audit(req.user, { action: 'lesson.updated', entityId: String(lecture._id), title: lecture.title });
+    res.json({ success: true, message: 'Lesson updated.', data: lecture });
+  } catch (err) { next(err); }
+});
+
+// @route   PUT /api/modules/topics/:topicId
+router.put('/topics/:topicId', protect, authorize('faculty', 'admin'), async (req, res, next) => {
+  try {
+    const topic = await Topic.findById(req.params.topicId);
+    if (!topic) return res.status(404).json({ success: false, message: 'Topic not found' });
+    const mod = await Module.findById(topic.module).populate('course');
+    if (!mod || !ownsCourse(mod.course, req.user)) return res.status(403).json({ success: false, message: 'Not authorized' });
+    if (req.body.title !== undefined) { const t = cleanTitle(req.body.title); if (!t) return res.status(400).json({ success: false, message: 'Topic title must be 2-160 characters.' }); topic.title = t; }
+    if (req.body.description !== undefined) topic.description = String(req.body.description).slice(0, 2000);
+    topic.updatedBy = req.user._id;
+    await topic.save();
+    await audit(req.user, { action: 'topic.updated', entityId: String(topic._id), title: topic.title });
+    res.json({ success: true, message: 'Topic updated.', data: topic });
+  } catch (err) { next(err); }
+});
+
+// @route   PUT /api/modules/:moduleId
+router.put('/:moduleId', protect, authorize('faculty', 'admin'), async (req, res, next) => {
+  try {
+    const mod = await Module.findById(req.params.moduleId).populate('course');
+    if (!mod) return res.status(404).json({ success: false, message: 'Module not found' });
+    if (!ownsCourse(mod.course, req.user)) return res.status(403).json({ success: false, message: 'Not authorized' });
+    const t = cleanTitle(req.body.title);
+    if (!t) return res.status(400).json({ success: false, message: 'Module title must be 2-160 characters.' });
+    mod.title = t;
+    mod.updatedBy = req.user._id;
+    await mod.save();
+    await audit(req.user, { action: 'module.updated', entityId: String(mod._id), title: mod.title });
+    res.json({ success: true, message: 'Module updated.', data: mod });
+  } catch (err) { next(err); }
 });
 
 module.exports = router;

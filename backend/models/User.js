@@ -1,4 +1,4 @@
-const mongoose = require('mongoose');
+const mongoose = require('../db');
 const userSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true, minlength: 2, maxlength: 100 },
   email: { type: String, required: true, unique: true, lowercase: true, trim: true },
@@ -18,6 +18,9 @@ const userSchema = new mongoose.Schema({
   studySeconds: { type: Number, default: 0, min: 0 },
   preferences: { type: mongoose.Schema.Types.Mixed, default: { emailNotifications:true, weeklySummary:false } },
   isVerified: { type: Boolean, default: false },
+  mustChangePassword: { type: Boolean, default: false },
+  isDemo: { type: Boolean, default: false },
+  passwordChangedAt: { type: Date },
   otpCode: { type: String, select: false },
   otpExpiry: { type: Date, select: false },
   passwordResetToken: { type: String, select: false },

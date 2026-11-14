@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const mongoose = require('mongoose');
+const db = require('../db');
 const { protect, authorize } = require('../middleware/auth');
 const Course = require('../models/Course');
 const Lecture = require('../models/Lecture');
@@ -27,7 +27,7 @@ const getStudentAnalytics = async (req, res) => {
 
     let filterCourseIds = [];
     if (courseId) {
-      filterCourseIds = [new mongoose.Types.ObjectId(courseId)];
+      filterCourseIds = [String(courseId)];
     } else {
       filterCourseIds = user.enrolledCourses.map(c => c._id);
     }
@@ -156,7 +156,7 @@ router.get('/faculty/:courseId', protect, authorize('faculty', 'admin'), async (
     for (const testId of testIds) {
         const testResults = allResults.filter(r => r.test.toString() === testId.toString());
         if (testResults.length > 0) {
-            const test = await mongoose.model('Test').findById(testId).populate('module');
+            const test = await db.model('Test').findById(testId).populate('module');
             const topic = test.module.title;
             if (!topicScores[topic]) topicScores[topic] = { total: 0, count: 0 };
             const avg = testResults.reduce((acc, r) => acc + r.percentage, 0) / testResults.length;

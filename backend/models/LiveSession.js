@@ -1,4 +1,4 @@
-const mongoose = require('mongoose');
+const mongoose = require('../db');
 
 const liveSessionSchema = new mongoose.Schema({
   topic: { type: String, required: true },

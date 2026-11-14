@@ -45,20 +45,6 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  const register = async (name, email, password, role, teacherCode) => {
-    try {
-      const res = await axios.post('http://localhost:5000/api/auth/register', { name, email, password, role, teacherCode });
-      localStorage.setItem('token', res.data.token);
-      axios.defaults.headers.common['Authorization'] = `Bearer ${res.data.token}`;
-      setUser(res.data.user);
-      toast.success('Registered successfully');
-      return true;
-    } catch (error) {
-      toast.error(error.response?.data?.message || 'Registration failed');
-      return false;
-    }
-  };
-
   const logout = () => {
     localStorage.removeItem('token');
     delete axios.defaults.headers.common['Authorization'];
@@ -67,7 +53,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   return (
-    <AuthContext.Provider value={{ user, setUser, login, register, logout, loading, fetchUser }}>
+    <AuthContext.Provider value={{ user, setUser, login, logout, loading, fetchUser }}>
       {children}
     </AuthContext.Provider>
   );

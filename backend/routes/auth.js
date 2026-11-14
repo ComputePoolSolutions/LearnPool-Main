@@ -3,31 +3,25 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const User = require('../models/User');
-const { protect } = require('../middleware/auth');
+const { protect, protectAllowPasswordChange } = require('../middleware/auth');
+const { normalizeEmail, isValidEmailFormat, isAutoProvisionEmail, autoProvisionDomains, initialPasswordFor, publicUser } = require('../utils/accounts');
+const db = require('../db');
+const { demoEnabled, demoPrivilegedAllowed, demoInstructorsAllowed, demoNameFromEmail } = require('../utils/demo');
+const LmsItem = require('../models/LmsItem');
 const sendEmail = require('../utils/sendEmail');
 const { getOTPVerificationEmailTemplate } = require('../utils/emailTemplate');
 
 const router = express.Router();
 
-const getSignedJwtToken = (id) => {
+const getSignedJwtToken = (id, extra = {}) => {
   if (!process.env.JWT_SECRET) throw new Error('JWT_SECRET is not configured');
-  return jwt.sign({ id }, process.env.JWT_SECRET, {
+  return jwt.sign({ id, ...extra }, process.env.JWT_SECRET, {
     expiresIn: '30d'
   });
 };
 
 // Generate 6-digit OTP
 const generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
-
-// Generate unique teacher code
-const generateTeacherCode = () => {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-  let code = 'TEA-';
-  for (let i = 0; i < 6; i++) {
-    code += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return code;
-};
 
 // @route POST /api/auth/forgot-password
 // Always return the same response so account existence is not disclosed.
@@ -72,6 +66,8 @@ router.post('/reset-password/:token', async (req, res) => {
     user.password = await bcrypt.hash(password, 12);
     user.passwordResetToken = undefined;
     user.passwordResetExpiry = undefined;
+    user.mustChangePassword = false;
+    user.passwordChangedAt = new Date();
     await user.save();
     return res.status(200).json({ success: true, message: 'Your password has been reset. You can now sign in.' });
   } catch (err) {
@@ -79,107 +75,142 @@ router.post('/reset-password/:token', async (req, res) => {
   }
 });
 
-// @desc    Register user
-// @route   POST /api/auth/register
-// @access  Public
-router.post('/register', async (req, res) => {
-  try {
-    const { name, email, password, role, teacherCode: providedTeacherCode } = req.body;
-    if (!name || String(name).trim().length < 2 || !email || !/^\S+@\S+\.\S+$/.test(email) || !password || password.length < 8) {
-      return res.status(400).json({ success:false, message:'Enter your name, a valid email and a password with at least 8 characters.' });
-    }
-    if (role && !['student','faculty','instructor'].includes(role)) return res.status(400).json({success:false,message:'Choose Student or Instructor.'});
+// Public self-registration was removed on purpose: accounts are created by an administrator
+// (POST /api/users) so that roles are always assigned by an admin.
 
-    const userExists = await User.findOne({ email });
-    if (userExists) {
-      return res.status(400).json({ success: false, message: 'Email already exists' });
-    }
+// Initial passwords are predictable (the email username), so slow down repeated wrong guesses.
+const failedLogins = new Map();
+const LOGIN_WINDOW_MS = 15 * 60 * 1000, LOGIN_MAX_FAILURES = 8;
+const loginKey = (req, email) => `${req.ip || 'unknown'}|${email}`;
+const loginBlocked = key => { const e = failedLogins.get(key); if (!e) return false; if (Date.now() - e.first > LOGIN_WINDOW_MS) { failedLogins.delete(key); return false; } return e.count >= LOGIN_MAX_FAILURES; };
+const loginFailed = key => { const e = failedLogins.get(key); if (!e || Date.now() - e.first > LOGIN_WINDOW_MS) failedLogins.set(key, { count: 1, first: Date.now() }); else e.count += 1; };
 
-    let teacherId = null;
-    let generatedTeacherCode = null;
-
-    if (role === 'student' && providedTeacherCode) {
-      const teacher = await User.findOne({ teacherCode: providedTeacherCode, role: { $in: ['faculty', 'instructor'] }, isApproved: true });
-      if (!teacher) {
-        return res.status(404).json({ success: false, message: 'That instructor code could not be found.' });
-      }
-      teacherId = teacher._id;
-    } else if (role === 'faculty' || role === 'instructor') {
-      generatedTeacherCode = generateTeacherCode();
-      // Ensure uniqueness (simple check, could be loop)
-      const existingCode = await User.findOne({ teacherCode: generatedTeacherCode });
-      if (existingCode) generatedTeacherCode = generateTeacherCode(); 
-    }
-
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
-
-    const otpCode = generateOTP();
-    const otpExpiry = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
-
-    const userData = {
-      name,
-      email,
-      password: hashedPassword,
-      role: role === 'faculty' ? 'instructor' : (role || 'student'),
-      isApproved: (role === 'faculty' || role === 'instructor') ? false : true,
-      otpCode,
-      otpExpiry,
-    };
-
-    if (teacherId) userData.teacher = teacherId;
-    if (generatedTeacherCode) userData.teacherCode = generatedTeacherCode;
-
-    const user = await User.create(userData);
-
-    // Email delivery must not hold up account creation. SMTP is optional in local development.
-    void sendEmail({
-      email: user.email,
-      subject: 'LearnPool - Email Verification OTP',
-      html: getOTPVerificationEmailTemplate(otpCode, user.name),
-    }).catch(error => console.warn('Verification email could not be sent:', error.message));
-
-    const token = getSignedJwtToken(user._id);
-
-    res.status(201).json({ success: true, token, user: { id: user._id, name: user.name, email: user.email, role: user.role, isVerified: user.isVerified } });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+// Just-in-time provisioning: a valid @mlrit.ac.in email whose password is the email username gets a
+// Student account on first sign-in. Set AUTO_PROVISION_STUDENTS=false to turn this off.
+const AUTO_PROVISION = () => process.env.AUTO_PROVISION_STUDENTS !== 'false';
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+async function provisionStudent(email) {
+  const username = initialPasswordFor(email);
+  // The lock makes simultaneous first sign-ins create exactly one account; the unique-email check is the second guard.
+  const release = await db.acquireLock(`provision:${email}`);
+  if (!release) {
+    for (let i = 0; i < 15; i++) { await sleep(200); const found = await User.findOne({ email }); if (found) return { user: found, created: false }; }
+    return { user: null, created: false };
   }
-});
+  try {
+    const existing = await User.findOne({ email });
+    if (existing) return { user: existing, created: false };
+    const user = await User.create({ name: username.toUpperCase().slice(0, 50), email, password: await bcrypt.hash(username, 12), role: 'student', status: 'active', isApproved: true, isVerified: true, mustChangePassword: true });
+    await LmsItem.create({ type: 'audit-logs', owner: user._id, data: { action: 'user.auto_provisioned', targetId: String(user._id), email } }).catch(() => {});
+    return { user, created: true };
+  } catch (e) {
+    if (e.code === 11000) return { user: await User.findOne({ email }), created: false };
+    throw e;
+  } finally { await release(); }
+}
 
-// @desc    Login user
+// Demo mode: an email that has no account yet becomes a Student with an unguessable password.
+async function provisionDemoStudent(email) {
+  const release = await db.acquireLock(`provision:${email}`);
+  if (!release) {
+    for (let i = 0; i < 15; i++) { await sleep(200); const found = await User.findOne({ email }); if (found) return { user: found, created: false }; }
+    return { user: null, created: false };
+  }
+  try {
+    const existing = await User.findOne({ email });
+    if (existing) return { user: existing, created: false };
+    const user = await User.create({ name: demoNameFromEmail(email), email, password: await bcrypt.hash(crypto.randomBytes(24).toString('hex'), 10), role: 'student', status: 'active', isApproved: true, isVerified: true, mustChangePassword: false, isDemo: true });
+    return { user, created: true };
+  } catch (e) {
+    if (e.code === 11000) return { user: await User.findOne({ email }), created: false };
+    throw e;
+  } finally { await release(); }
+}
+
+// @desc    Public sign-in configuration (lets the login page explain demo mode)
+// @route   GET /api/auth/config
+router.get('/config', (req, res) => res.json({ success: true, data: { demoMode: demoEnabled(), demoInstructors: demoInstructorsAllowed(), autoProvisionDomains: AUTO_PROVISION() ? autoProvisionDomains() : [] } }));
+
+// @desc    Login user (one login for every role; the role comes from the database)
 // @route   POST /api/auth/login
 // @access  Public
 router.post('/login', async (req, res) => {
   try {
-    const { email, password } = req.body;
-
+    const email = normalizeEmail(req.body.email);
+    const password = typeof req.body.password === 'string' ? req.body.password : '';
     if (!email || !password) {
-      return res.status(400).json({ success: false, message: 'Please provide an email and password' });
+      return res.status(400).json({ success: false, message: 'Please enter your email and password.' });
+    }
+    if (!isValidEmailFormat(email)) {
+      return res.status(400).json({ success: false, message: 'Please enter a valid email address.' });
     }
 
-    const user = await User.findOne({ email });
-
-    if (!user) {
-      return res.status(401).json({ success: false, message: 'Invalid credentials' });
+    const key = loginKey(req, email);
+    if (loginBlocked(key)) return res.status(429).json({ success: false, message: 'Too many sign-in attempts. Please wait a few minutes and try again.' });
+    let user = await User.findOne({ email });
+    let provisioned = false, demoBypass = false;
+    if (demoEnabled()) {
+      // Demo mode: any valid email and any non-empty password. The role still comes from the database.
+      if (!user) { const r = await provisionDemoStudent(email); user = r.user; provisioned = r.created; demoBypass = !!user; }
+      else {
+        const userRole = user.role === 'faculty' ? 'instructor' : user.role;
+        if (userRole === 'student' || (userRole === 'instructor' && demoInstructorsAllowed()) || demoPrivilegedAllowed()) demoBypass = true;
+      }
+    }
+    if (!user && !demoBypass && AUTO_PROVISION() && isAutoProvisionEmail(email) && initialPasswordFor(email).length >= 2 && password === initialPasswordFor(email)) {
+      const result = await provisionStudent(email);
+      user = result.user; provisioned = result.created;
+    }
+    // Same message for an unknown email and a wrong password, so accounts cannot be probed.
+    const isMatch = demoBypass ? true : (user ? await bcrypt.compare(password, user.password) : false);
+    if (!user || !isMatch) {
+      loginFailed(key);
+      if (demoEnabled() && user) return res.status(401).json({ success: false, message: demoInstructorsAllowed() ? 'Demo mode: administrator accounts still need their real password.' : 'Demo mode: instructor and admin accounts still need their real password.' });
+      return res.status(401).json({ success: false, message: 'Incorrect email or password.' });
     }
 
-    if (user.status === 'suspended' || user.status === 'disabled') return res.status(403).json({success:false,message:'This account is currently unavailable.'});
-
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
-      return res.status(401).json({ success: false, message: 'Invalid credentials' });
+    if (user.status === 'suspended' || user.status === 'disabled') {
+      return res.status(403).json({ success: false, message: 'Your account is currently inactive. Contact the administrator.' });
+    }
+    const role = user.role === 'faculty' ? 'instructor' : user.role;
+    if (!['student', 'instructor', 'admin'].includes(role) || (role === 'instructor' && !user.isApproved)) {
+      return res.status(403).json({ success: false, message: 'Your account is not authorized.' });
     }
 
-    if ((user.role === 'faculty' || user.role === 'instructor') && !user.isApproved) {
-      return res.status(403).json({ success: false, message: 'Your faculty account is pending admin approval' });
-    }
-
-    const token = getSignedJwtToken(user._id);
-
-    res.status(200).json({ success: true, token, user: { id: user._id, name: user.name, email: user.email, role: user.role, isVerified: user.isVerified } });
+    failedLogins.delete(key);
+    const token = getSignedJwtToken(user._id, demoBypass ? { demo: true } : {});
+    res.status(200).json({ success: true, provisioned, message: demoBypass ? (provisioned ? 'Demo mode: a student account was created for you.' : 'Demo mode: signing you in.') : provisioned ? 'Welcome to LearnPool! Your student account was created. Please choose a new password.' : 'Redirecting to your dashboard.', demo: demoBypass, token, user: demoBypass ? { ...publicUser(user), mustChangePassword: false } : publicUser(user) });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: 'We could not sign you in. Please try again.' });
+  }
+});
+
+// @desc    Change own password (required on first login)
+// @route   POST /api/auth/change-password
+// @access  Private
+router.post('/change-password', protectAllowPasswordChange, async (req, res) => {
+  try {
+    const currentPassword = typeof req.body.currentPassword === 'string' ? req.body.currentPassword : '';
+    const newPassword = typeof req.body.newPassword === 'string' ? req.body.newPassword : '';
+    const confirmPassword = typeof req.body.confirmPassword === 'string' ? req.body.confirmPassword : newPassword;
+    if (!currentPassword || !newPassword) return res.status(400).json({ success: false, message: 'Enter your current password and a new password.' });
+    if (newPassword !== confirmPassword) return res.status(400).json({ success: false, message: 'The new passwords do not match.' });
+    if (newPassword.length < 8) return res.status(400).json({ success: false, message: 'Choose a new password with at least 8 characters.' });
+    if (newPassword.length > 128) return res.status(400).json({ success: false, message: 'Choose a shorter password (up to 128 characters).' });
+
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
+    if (!(await bcrypt.compare(currentPassword, user.password))) return res.status(401).json({ success: false, message: 'Your current password is incorrect.' });
+    if (newPassword === currentPassword) return res.status(400).json({ success: false, message: 'Your new password must be different from the current one.' });
+    if (newPassword.toLowerCase() === initialPasswordFor(user.email).toLowerCase()) return res.status(400).json({ success: false, message: 'Your new password cannot be the same as your initial password.' });
+
+    user.password = await bcrypt.hash(newPassword, 12);
+    user.mustChangePassword = false;
+    user.passwordChangedAt = new Date();
+    await user.save();
+    res.status(200).json({ success: true, message: 'Your password has been updated.', user: publicUser(user) });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'We could not update your password. Please try again.' });
   }
 });
 
@@ -189,7 +220,7 @@ router.post('/login', async (req, res) => {
 router.post('/verify-email', protect, async (req, res) => {
   try {
     const { otpCode } = req.body;
-    const user = await User.findById(req.user.id);
+    const user = await User.findById(req.user.id).select('+otpCode +otpExpiry');
 
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
@@ -264,9 +295,10 @@ router.post('/resend-otp', protect, async (req, res) => {
 // @desc    Get current logged in user
 // @route   GET /api/auth/me
 // @access  Private
-router.get('/me', protect, async (req, res) => {
+router.get('/me', protectAllowPasswordChange, async (req, res) => {
   try {
     const user = await User.findById(req.user.id).select('-password -otpCode -otpExpiry').populate('enrolledCourses', 'title');
+    if (user && req.demoSession) user.mustChangePassword = false;   // demo sessions have no initial password to change
     res.status(200).json({ success: true, data: user });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });

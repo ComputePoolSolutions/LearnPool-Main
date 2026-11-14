@@ -1,6 +1,6 @@
 const express = require('express');
 const http = require('http');
-const mongoose = require('mongoose');
+const db = require('./db');
 const dotenv = require('dotenv');
 const cors = require('cors');
 const { Server } = require('socket.io');
@@ -46,12 +46,10 @@ io.use(async (socket, next) => {
   } catch { next(new Error('Authentication required')); }
 });
 
-const mongoUri = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/mern-lms';
-
-// Refuse API work while MongoDB is disconnected instead of letting Mongoose buffer requests.
+// Refuse API work until Firestore is reachable.
 app.use('/api', (req, res, next) => {
-  if (mongoose.connection.readyState !== 1) {
-    return res.status(503).json({ success: false, message: 'Database is not connected. Wait for MongoDB connected in the backend terminal and retry.' });
+  if (db.connection.readyState !== 1) {
+    return res.status(503).json({ success: false, message: 'Database is not connected. Wait for "Firestore connected" in the backend terminal and retry.' });
   }
   next();
 });
@@ -101,11 +99,14 @@ app.use((err, req, res, next) => {
 });
 async function startServer() {
   try {
-    await mongoose.connect(mongoUri, { serverSelectionTimeoutMS: 10000 });
-    console.log('MongoDB connected');
+    const { demoEnabled } = require('./utils/demo');
+    if (process.env.DEMO_LOGIN_MODE === 'true' && process.env.NODE_ENV === 'production') console.warn('DEMO_LOGIN_MODE is ignored because NODE_ENV=production. Real authentication stays on.');
+    if (demoEnabled()) console.warn('DEMO LOGIN MODE is ON: any email and password signs in (new emails become students). Never use this in production.');
+    await db.connect();
+    console.log('Firestore connected');
     server.listen(PORT, () => console.log('Server running on port ' + PORT));
   } catch (error) {
-    console.error('MongoDB connection error:', error.message);
+    console.error('Firestore connection error:', error.message);
     process.exit(1);
   }
 }

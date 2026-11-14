@@ -6,6 +6,7 @@ const { protect, authorize } = require('../middleware/auth');
 const sendEmail = require('../utils/sendEmail');
 const { getTestResultEmailTemplate } = require('../utils/emailTemplate');
 
+const audit = require('../utils/audit');
 const router = express.Router();
 
 // @desc    Create test in module
@@ -265,6 +266,55 @@ router.delete('/results/:resultId', protect, authorize('faculty', 'admin'), asyn
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
+});
+
+// @desc    Update an assessment (title, time limit, questions)
+// @route   PUT /api/tests/:id
+// @access  Private (Faculty/Admin)
+router.put('/:id', protect, authorize('faculty', 'admin'), async (req, res, next) => {
+  try {
+    const test = await Test.findById(req.params.id).populate({ path: 'module', populate: { path: 'course' } });
+    if (!test) return res.status(404).json({ success: false, message: 'Test not found' });
+    const course = test.module && test.module.course;
+    if (!course || (String(course.faculty) !== String(req.user._id) && req.user.role !== 'admin')) return res.status(403).json({ success: false, message: 'Not authorized' });
+    const b = req.body || {};
+    if (b.title !== undefined) {
+      const title = String(b.title).trim();
+      if (title.length < 2 || title.length > 160) return res.status(400).json({ success: false, message: 'Assessment title must be 2-160 characters.' });
+      test.title = title;
+    }
+    if (b.duration !== undefined) {
+      const d = Number(b.duration);
+      if (!Number.isFinite(d) || d < 0 || d > 1000) return res.status(400).json({ success: false, message: 'Enter a valid time limit in minutes.' });
+      test.duration = d;
+    }
+    if (b.negativeMarking !== undefined) test.negativeMarking = Math.max(0, Number(b.negativeMarking) || 0);
+    if (b.shuffleQuestions !== undefined) test.shuffleQuestions = !!b.shuffleQuestions;
+    if (b.questions !== undefined) {
+      if (!Array.isArray(b.questions) || !b.questions.length) return res.status(400).json({ success: false, message: 'An assessment needs at least one question.' });
+      const clean = [];
+      for (const q of b.questions) {
+        const options = Array.isArray(q.options) ? q.options.map(o => String(o).trim()).filter(Boolean) : [];
+        const answer = Number(q.correctAnswerIndex);
+        if (!String(q.questionText || '').trim() || options.length < 2 || !Number.isInteger(answer) || answer < 0 || answer >= options.length) return res.status(400).json({ success: false, message: 'Each question needs text, at least two options and one correct answer.' });
+        const item = { questionText: String(q.questionText).trim(), options, correctAnswerIndex: answer, marks: Math.max(1, Number(q.marks) || 1) };
+        if (q._id) item._id = String(q._id);   // keep the question's identity when it is only being edited
+        clean.push(item);
+      }
+      // Students may already have answered: do not let edits silently re-grade or invalidate their results.
+      const attempts = await Result.countDocuments({ test: test._id });
+      if (attempts) {
+        const before = test.questions.map(q => ({ id: String(q._id), n: q.options.length, a: q.correctAnswerIndex, m: q.marks }));
+        const same = clean.length === before.length && clean.every((q, i) => before[i] && String(q._id) === before[i].id && q.options.length === before[i].n && q.correctAnswerIndex === before[i].a && q.marks === before[i].m);
+        if (!same) return res.status(409).json({ success: false, message: `${attempts} learner${attempts === 1 ? ' has' : 's have'} already attempted this assessment, so questions can only be reworded. Adding or removing questions, answer choices, correct answers or points is not allowed.` });
+      }
+      test.questions = clean;
+    }
+    test.updatedBy = req.user._id;
+    await test.save();
+    await audit(req.user, { action: 'assessment.updated', entityId: String(test._id), title: test.title });
+    res.json({ success: true, message: 'Assessment updated.', data: test });
+  } catch (err) { next(err); }
 });
 
 module.exports = router;

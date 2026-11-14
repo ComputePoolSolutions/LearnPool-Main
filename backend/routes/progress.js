@@ -1,5 +1,5 @@
 const express = require('express');
-const mongoose = require('mongoose');
+const db = require('../db');
 const router = express.Router();
 const Progress = require('../models/Progress');
 const Lecture = require('../models/Lecture');
@@ -13,7 +13,7 @@ router.post('/lecture/:lectureId', protect, authorize('student'), async (req, re
   try {
     const lectureId = req.params.lectureId;
     const userId = req.user.id;
-    if (!mongoose.isValidObjectId(lectureId)) return res.status(400).json({ success:false,message:'Invalid lecture.' });
+    if (!db.isValidObjectId(lectureId)) return res.status(400).json({ success:false,message:'Invalid lecture.' });
     const lecture=await Lecture.findById(lectureId).populate({path:'module',populate:{path:'course'}});
     if(!lecture)return res.status(404).json({success:false,message:'Lecture not found.'});
     const course=lecture.module?.course;
@@ -48,7 +48,7 @@ router.get('/course/:courseId', protect, authorize('student'), async (req, res) 
     const courseId = req.params.courseId;
     const userId = req.user.id;
 
-    if (!mongoose.isValidObjectId(courseId)) return res.status(400).json({success:false,message:'Invalid course.'});
+    if (!db.isValidObjectId(courseId)) return res.status(400).json({success:false,message:'Invalid course.'});
     const course=await Course.findById(courseId).populate({path:'modules',populate:[{path:'lectures'},{path:'topics',populate:'lectures'}]});
     if(!course)return res.status(404).json({success:false,message:'Course not found.'});
     if(!course.students.some(id=>String(id)===String(userId)))return res.status(403).json({success:false,message:'You are not enrolled in this course.'});

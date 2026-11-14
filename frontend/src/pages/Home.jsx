@@ -14,9 +14,6 @@ export default function Home() {
             The next generation Learning Management System. Engage in live classes, take interactive tests, and track your progress in real-time.
           </p>
           <div className="flex justify-center space-x-4">
-            <Link to="/register" className="bg-indigo-600 text-white px-8 py-3 rounded-lg font-semibold text-lg hover:bg-indigo-700 transition shadow-lg hover:shadow-xl">
-              Get Started
-            </Link>
             <Link to="/courses" className="bg-white text-indigo-600 border border-indigo-200 px-8 py-3 rounded-lg font-semibold text-lg hover:bg-indigo-50 transition shadow-sm">
               Browse Courses
             </Link>

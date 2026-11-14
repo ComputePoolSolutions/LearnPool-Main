@@ -6,32 +6,53 @@ const router = express.Router();
 const bcrypt = require('bcryptjs');
 const multer = require('multer');
 const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto');
+const { ASSIGNABLE_ROLES, normalizeEmail, isAllowedEmail, emailRuleMessage, initialPasswordFor, generateTeacherCode } = require('../utils/accounts');
 
-// Multer Config for Profile Pictures
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, 'uploads/');
-  },
-  filename: function (req, file, cb) {
-    cb(null, `profile-${req.user.id}-${Date.now()}${path.extname(file.originalname)}`);
-  }
+// ---- Profile pictures -------------------------------------------------------
+// JPG / PNG / WebP only, 2 MB maximum. The file is kept in memory first so its real
+// content (not just the name the browser sent) can be checked before anything is written.
+const avatarDir = path.join(__dirname, '..', 'uploads', 'avatars');
+fs.mkdirSync(avatarDir, { recursive: true });
+const AVATAR_MAX_BYTES = 2 * 1024 * 1024;
+const AVATAR_MIME = new Set(['image/jpeg', 'image/png', 'image/webp']);
+const avatarUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: AVATAR_MAX_BYTES, files: 1 },
+  fileFilter: (req, file, cb) => AVATAR_MIME.has(file.mimetype) ? cb(null, true) : cb(Object.assign(new Error('Use a JPG, PNG or WebP image.'), { status: 400 }))
 });
+const parseAvatar = (req, res, next) => avatarUpload.single('picture')(req, res, error => {
+  if (!error) return next();
+  const tooBig = error.code === 'LIMIT_FILE_SIZE';
+  return res.status(tooBig ? 413 : (error.status || 400)).json({ success: false, message: tooBig ? 'Profile pictures must be 2 MB or smaller.' : (error.status ? error.message : 'Could not read that image. Use a JPG, PNG or WebP file under 2 MB.') });
+});
+// Detect the real image type from the file's first bytes.
+function sniffImage(buf) {
+  if (!buf || buf.length < 12) return null;
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'jpg';
+  if (buf.slice(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'png';
+  if (buf.slice(0, 4).toString('ascii') === 'RIFF' && buf.slice(8, 12).toString('ascii') === 'WEBP') return 'webp';
+  return null;
+}
+const removeAvatarFile = url => {
+  if (typeof url !== 'string' || !url.startsWith('/uploads/avatars/')) return;
+  const target = path.join(avatarDir, path.basename(url));
+  try { if (fs.existsSync(target)) fs.unlinkSync(target); } catch { /* ignore */ }
+};
 
-const upload = multer({ 
-  storage: storage,
-  fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith('image/')) {
-      cb(null, true);
-    } else {
-      cb(new Error('Only images are allowed'));
-    }
-  }
-});
+// Account fields that are safe to return to the admin UI.
+const safeUser = user => {
+  const o = typeof user.toObject === 'function' ? user.toObject() : { ...user };
+  for (const k of ['password', 'otpCode', 'otpExpiry', 'passwordResetToken', 'passwordResetExpiry']) delete o[k];
+  return o;
+};
+const audit = (req, data) => require('../models/LmsItem').create({ type: 'audit-logs', owner: req.user._id, data }).catch(() => {});
 
 // @desc    Get all approved teachers
 // @route   GET /api/users/teachers
 // @access  Public
-router.get('/teachers', async (req, res) => {
+router.get('/teachers', protect, async (req, res) => {
   try {
     const teachers = await User.find({ role: { $in: ['faculty', 'instructor'] }, isApproved: true, status: 'active' }).select('name teacherCode profilePicture');
     res.status(200).json({ success: true, count: teachers.length, data: teachers });
@@ -98,10 +119,12 @@ router.put('/:id/approve', protect, authorize('admin'), async (req, res) => {
 router.patch('/:id/access', protect, authorize('admin'), async(req,res,next)=>{
   try{
     const {role,status}=req.body;
-    if(role!==undefined&&!['student','instructor','admin'].includes(role))return res.status(400).json({success:false,message:'Choose a valid role.'});
+    if(role!==undefined&&!ASSIGNABLE_ROLES.includes(role))return res.status(400).json({success:false,message:'Choose Student or Instructor.'});
     if(status!==undefined&&!['active','suspended','disabled'].includes(status))return res.status(400).json({success:false,message:'Choose a valid account status.'});
     const user=await User.findById(req.params.id);
     if(!user)return res.status(404).json({success:false,message:'User not found.'});
+    if(role!==undefined&&user.role==='admin')return res.status(400).json({success:false,message:'Administrator accounts cannot be changed here.'});
+    if(role!==undefined&&!isAllowedEmail(normalizeEmail(user.email)))return res.status(400).json({success:false,message:`This account's email is not allowed for a ${role} account. ${emailRuleMessage()}`});
     if(String(user._id)===String(req.user._id)&&status&&status!=='active')return res.status(400).json({success:false,message:'You cannot suspend your own admin account.'});
     if(user.role==='admin'&&status&&status!=='active'){
       const count=await User.countDocuments({role:'admin',status:'active'});
@@ -114,7 +137,7 @@ router.patch('/:id/access', protect, authorize('admin'), async(req,res,next)=>{
     const before={role:user.role,status:user.status};
     if(role)user.role=role;
     if(status)user.status=status;
-    if(role==='instructor')user.isApproved=true;
+    if(role==='instructor'){user.isApproved=true;if(!user.teacherCode)user.teacherCode=generateTeacherCode();}
     await user.save();
     const LmsItem=require('../models/LmsItem');
     await LmsItem.create({type:'audit-logs',owner:req.user._id,data:{action:'user.access_updated',targetId:String(user._id),before,after:{role:user.role,status:user.status}}});
@@ -153,6 +176,7 @@ router.delete('/:id', protect, authorize('admin'), async (req, res) => {
     }
 
     await User.findByIdAndDelete(req.params.id);
+    await audit(req, { action: 'user.deleted', targetId: String(req.params.id), email: user.email });
     res.status(200).json({ success: true, data: {} });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -198,25 +222,20 @@ router.get('/export', protect, async(req,res,next)=>{
 // @desc    Update user profile
 // @route   PUT /api/users/profile
 // @access  Private
-router.put('/profile', protect, upload.single('profilePicture'), async (req, res) => {
+router.put('/profile', protect, async (req, res) => {
   try {
-    const { name, email, phoneNumber, bio, skills, interests, oldPassword, newPassword } = req.body;
+    const { name, phoneNumber, bio, skills, interests, oldPassword, newPassword } = req.body;
     
     let user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
     // Update basic info
     if (name) user.name = name;
-    if (email) user.email = email;
     if (phoneNumber) user.phoneNumber = phoneNumber;
     if (bio) user.bio = bio;
     if (skills) user.skills = Array.isArray(skills) ? skills : skills.split(',').map(s => s.trim());
     if (interests) user.interests = Array.isArray(interests) ? interests : interests.split(',').map(i => i.trim());
     
-    if (req.file) {
-      user.profilePicture = `/uploads/${req.file.filename}`;
-    }
-
     // Password Update
     if (newPassword) {
       if (!oldPassword) {
@@ -228,6 +247,8 @@ router.put('/profile', protect, upload.single('profilePicture'), async (req, res
       }
       const salt = await bcrypt.genSalt(10);
       user.password = await bcrypt.hash(newPassword, salt);
+      user.mustChangePassword = false;
+      user.passwordChangedAt = new Date();
     }
 
     await user.save();
@@ -238,6 +259,127 @@ router.put('/profile', protect, upload.single('profilePicture'), async (req, res
     res.status(200).json({ success: true, data: updatedUser });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Admin: create accounts (the only way Student / Instructor accounts come to exist)
+// ---------------------------------------------------------------------------
+// @route   POST /api/users
+// @access  Private/Admin
+router.post('/', protect, authorize('admin'), async (req, res, next) => {
+  try {
+    const name = String(req.body.name || '').trim();
+    const email = normalizeEmail(req.body.email);
+    const role = String(req.body.role || '').trim().toLowerCase();
+    if (name.length < 2 || name.length > 100) return res.status(400).json({ success: false, message: 'Enter the person\u2019s full name.' });
+    if (!ASSIGNABLE_ROLES.includes(role)) return res.status(400).json({ success: false, message: 'Choose Student or Instructor.' });
+    if (!isAllowedEmail(email)) return res.status(400).json({ success: false, message: emailRuleMessage() });
+    if (await User.findOne({ email })) return res.status(409).json({ success: false, message: 'An account with this email already exists.' });
+
+    // Initial password = the email username; only its bcrypt hash is stored.
+    const password = await bcrypt.hash(initialPasswordFor(email), 12);
+    const data = { name, email, password, role, status: 'active', isApproved: true, isVerified: true, mustChangePassword: true };
+    if (role === 'instructor') {
+      let code = generateTeacherCode();
+      if (await User.findOne({ teacherCode: code })) code = generateTeacherCode();
+      data.teacherCode = code;
+    }
+    const user = await User.create(data);
+    await audit(req, { action: 'user.created', targetId: String(user._id), role, email });
+    res.status(201).json({ success: true, message: 'Account created. The initial password is the part of the email before @.', data: safeUser(user) });
+  } catch (e) {
+    if (e.code === 11000) return res.status(409).json({ success: false, message: 'An account with this email already exists.' });
+    next(e);
+  }
+});
+
+// @route   POST /api/users/:id/reset-password
+// @access  Private/Admin
+router.post('/:id/reset-password', protect, authorize('admin'), async (req, res, next) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
+    if (user.role === 'admin') return res.status(400).json({ success: false, message: 'Administrator passwords cannot be reset here.' });
+    user.password = await bcrypt.hash(initialPasswordFor(user.email), 12);
+    user.mustChangePassword = true;
+    user.passwordChangedAt = new Date();
+    await user.save();
+    await audit(req, { action: 'user.password_reset', targetId: String(user._id) });
+    res.json({ success: true, message: 'Password reset to the initial password (the email username). The user must change it at next sign-in.' });
+  } catch (e) { next(e); }
+});
+
+// @route   POST /api/users/profile/picture   (multipart field "picture")
+// @access  Private
+router.post('/profile/picture', protect, parseAvatar, async (req, res, next) => {
+  try {
+    if (!req.file) return res.status(400).json({ success: false, message: 'Choose an image to upload.' });
+    const kind = sniffImage(req.file.buffer);
+    if (!kind) return res.status(400).json({ success: false, message: 'That file is not a valid JPG, PNG or WebP image.' });
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
+    const filename = `${user._id}-${crypto.randomBytes(8).toString('hex')}.${kind}`;
+    fs.writeFileSync(path.join(avatarDir, filename), req.file.buffer, { mode: 0o644 });
+    const previous = user.profilePicture;
+    user.profilePicture = `/uploads/avatars/${filename}`;
+    await user.save();
+    removeAvatarFile(previous);
+    res.json({ success: true, message: 'Profile picture saved.', data: { profilePicture: user.profilePicture } });
+  } catch (e) { next(e); }
+});
+
+// @route   DELETE /api/users/profile/picture
+// @access  Private
+router.delete('/profile/picture', protect, async (req, res, next) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
+    const previous = user.profilePicture;
+    user.profilePicture = '';
+    await user.save();
+    removeAvatarFile(previous);
+    res.json({ success: true, message: 'Profile picture removed.', data: { profilePicture: '' } });
+  } catch (e) { next(e); }
+});
+
+// @route   GET /api/users/:id   (account details)
+// @access  Private/Admin
+router.get('/:id', protect, authorize('admin'), async (req, res, next) => {
+  try {
+    const user = await User.findById(req.params.id).populate('enrolledCourses', 'title');
+    if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
+    res.json({ success: true, data: safeUser(user) });
+  } catch (e) { next(e); }
+});
+
+// @route   PATCH /api/users/:id   (admin edits a student's or instructor's details)
+// @access  Private/Admin
+router.patch('/:id', protect, authorize('admin'), async (req, res, next) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
+    if (user.role === 'admin') return res.status(400).json({ success: false, message: 'Administrator details are managed from their own Settings page.' });
+    const b = req.body || {};
+    if (b.name !== undefined) {
+      const name = String(b.name).trim();
+      if (name.length < 2 || name.length > 100) return res.status(400).json({ success: false, message: 'Enter the person\u2019s full name.' });
+      user.name = name;
+    }
+    if (b.phoneNumber !== undefined) user.phoneNumber = String(b.phoneNumber).trim().slice(0, 30);
+    if (b.bio !== undefined) user.bio = String(b.bio).trim().slice(0, 500);
+    if (b.email !== undefined && normalizeEmail(b.email) !== user.email) {
+      const email = normalizeEmail(b.email);
+      if (!isAllowedEmail(email)) return res.status(400).json({ success: false, message: emailRuleMessage() });
+      if (await User.findOne({ email, _id: { $ne: String(user._id) } })) return res.status(409).json({ success: false, message: 'An account with this email already exists.' });
+      user.email = email;
+    }
+    await user.save();
+    await audit(req, { action: 'user.updated', targetId: String(user._id) });
+    res.json({ success: true, message: 'Details updated.', data: safeUser(user) });
+  } catch (e) {
+    if (e.code === 11000) return res.status(409).json({ success: false, message: 'An account with this email already exists.' });
+    next(e);
   }
 });
 
