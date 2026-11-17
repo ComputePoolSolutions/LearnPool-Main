@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const { demoEnabled } = require('../utils/demo');
+const credentials = require('../utils/credentials');
 
 const canonical = role => role === 'faculty' ? 'instructor' : role;
 const protect = async (req, res, next) => {
@@ -17,6 +18,11 @@ const protect = async (req, res, next) => {
     // Accounts created by an administrator must replace their initial password first.
     // A demo-mode session (token issued without a password check) does not have an initial password to replace.
     req.demoSession = decoded.demo === true && demoEnabled();
+    // An onboarding (demo) token only works while the account has no permanent password. Once one exists the
+    // real password is required, so old demo tokens cannot be used to take the account over.
+    if (decoded.demo === true && (!demoEnabled() || credentials.passwordSetupComplete(user))) {
+      return res.status(401).json({ success: false, message: 'This session has ended. Please sign in with your password.' });
+    }
     if (user.mustChangePassword && !req.allowPendingPasswordChange && !req.demoSession) {
       return res.status(403).json({ success: false, code: 'PASSWORD_CHANGE_REQUIRED', message: 'Please change your initial password to continue.' });
     }

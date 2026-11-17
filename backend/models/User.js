@@ -2,7 +2,11 @@ const mongoose = require('../db');
 const userSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true, minlength: 2, maxlength: 100 },
   email: { type: String, required: true, unique: true, lowercase: true, trim: true },
-  password: { type: String, required: true, minlength: 8 },
+  // bcrypt hash, only for the "local" provider. With Firebase Authentication no password is stored here.
+  password: { type: String, minlength: 8 },
+  credentialProvider: { type: String, enum: ['local', 'firebase'] },
+  // true once the person has chosen their own permanent password (unset on older accounts: see utils/credentials.js)
+  passwordSetupComplete: { type: Boolean },
   role: { type: String, enum: ['student', 'faculty', 'instructor', 'admin'], default: 'student' },
   status: { type: String, enum: ['active', 'suspended', 'disabled'], default: 'active' },
   isApproved: { type: Boolean, default: true },

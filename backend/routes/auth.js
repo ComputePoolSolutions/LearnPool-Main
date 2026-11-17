@@ -1,12 +1,15 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
-const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const User = require('../models/User');
 const { protect, protectAllowPasswordChange } = require('../middleware/auth');
 const { normalizeEmail, isValidEmailFormat, isAutoProvisionEmail, autoProvisionDomains, initialPasswordFor, publicUser } = require('../utils/accounts');
 const db = require('../db');
-const { demoEnabled, demoPrivilegedAllowed, demoInstructorsAllowed, demoNameFromEmail } = require('../utils/demo');
+const { demoEnabled, demoPrivilegedAllowed, demoInstructorsAllowed, demoNameFromEmail, DEMO_PASSWORD_MESSAGE } = require('../utils/demo');
+const credentials = require('../utils/credentials');
+// 'set' = onboarding session with no permanent password yet (create one without a current password);
+// 'change' = a verified password exists (changing it needs the current one).
+const passwordModeFor = (user, demoSession) => (demoSession ? 'set' : 'change');
 const LmsItem = require('../models/LmsItem');
 const sendEmail = require('../utils/sendEmail');
 const { getOTPVerificationEmailTemplate } = require('../utils/emailTemplate');
@@ -63,14 +66,16 @@ router.post('/reset-password/:token', async (req, res) => {
     const tokenHash = crypto.createHash('sha256').update(String(req.params.token || '')).digest('hex');
     const user = await User.findOne({ passwordResetToken: tokenHash, passwordResetExpiry: { $gt: new Date() } }).select('+passwordResetToken +passwordResetExpiry');
     if (!user) return res.status(400).json({ success: false, message: 'This reset link is invalid or has expired. Request a new one.' });
-    user.password = await bcrypt.hash(password, 12);
+    await credentials.setPassword(user, password);
+    user.passwordSetupComplete = true;
     user.passwordResetToken = undefined;
     user.passwordResetExpiry = undefined;
+    user.isDemo = false;   // an emailed reset proves the address and creates a real password
     user.mustChangePassword = false;
-    user.passwordChangedAt = new Date();
     await user.save();
     return res.status(200).json({ success: true, message: 'Your password has been reset. You can now sign in.' });
   } catch (err) {
+    if (err && err.expose) return res.status(err.status).json({ success: false, message: err.message });
     return res.status(500).json({ success: false, message: 'We could not reset your password. Please try again.' });
   }
 });
@@ -85,7 +90,7 @@ const loginKey = (req, email) => `${req.ip || 'unknown'}|${email}`;
 const loginBlocked = key => { const e = failedLogins.get(key); if (!e) return false; if (Date.now() - e.first > LOGIN_WINDOW_MS) { failedLogins.delete(key); return false; } return e.count >= LOGIN_MAX_FAILURES; };
 const loginFailed = key => { const e = failedLogins.get(key); if (!e || Date.now() - e.first > LOGIN_WINDOW_MS) failedLogins.set(key, { count: 1, first: Date.now() }); else e.count += 1; };
 
-// Just-in-time provisioning: a valid @mlrit.ac.in email whose password is the email username gets a
+// Just-in-time provisioning: an email on one of the AUTO_PROVISION_DOMAINS whose password is the email username gets a
 // Student account on first sign-in. Set AUTO_PROVISION_STUDENTS=false to turn this off.
 const AUTO_PROVISION = () => process.env.AUTO_PROVISION_STUDENTS !== 'false';
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -100,7 +105,9 @@ async function provisionStudent(email) {
   try {
     const existing = await User.findOne({ email });
     if (existing) return { user: existing, created: false };
-    const user = await User.create({ name: username.toUpperCase().slice(0, 50), email, password: await bcrypt.hash(username, 12), role: 'student', status: 'active', isApproved: true, isVerified: true, mustChangePassword: true });
+    const user = await User.create({ name: username.toUpperCase().slice(0, 50), email, role: 'student', status: 'active', isApproved: true, isVerified: true, mustChangePassword: true, passwordSetupComplete: false });
+    try { await credentials.setPassword(user, username); await user.save(); }
+    catch (e) { await user.deleteOne(); throw e; }
     await LmsItem.create({ type: 'audit-logs', owner: user._id, data: { action: 'user.auto_provisioned', targetId: String(user._id), email } }).catch(() => {});
     return { user, created: true };
   } catch (e) {
@@ -109,7 +116,7 @@ async function provisionStudent(email) {
   } finally { await release(); }
 }
 
-// Demo mode: an email that has no account yet becomes a Student with an unguessable password.
+// Demo / onboarding: an email that has no account yet becomes a Student. No password exists until the person sets one.
 async function provisionDemoStudent(email) {
   const release = await db.acquireLock(`provision:${email}`);
   if (!release) {
@@ -119,7 +126,7 @@ async function provisionDemoStudent(email) {
   try {
     const existing = await User.findOne({ email });
     if (existing) return { user: existing, created: false };
-    const user = await User.create({ name: demoNameFromEmail(email), email, password: await bcrypt.hash(crypto.randomBytes(24).toString('hex'), 10), role: 'student', status: 'active', isApproved: true, isVerified: true, mustChangePassword: false, isDemo: true });
+    const user = await User.create({ name: demoNameFromEmail(email), email, role: 'student', status: 'active', isApproved: true, isVerified: true, mustChangePassword: false, passwordSetupComplete: false, isDemo: true });
     return { user, created: true };
   } catch (e) {
     if (e.code === 11000) return { user: await User.findOne({ email }), created: false };
@@ -129,7 +136,7 @@ async function provisionDemoStudent(email) {
 
 // @desc    Public sign-in configuration (lets the login page explain demo mode)
 // @route   GET /api/auth/config
-router.get('/config', (req, res) => res.json({ success: true, data: { demoMode: demoEnabled(), demoInstructors: demoInstructorsAllowed(), autoProvisionDomains: AUTO_PROVISION() ? autoProvisionDomains() : [] } }));
+router.get('/config', (req, res) => res.json({ success: true, data: { demoMode: demoEnabled(), demoInstructors: demoInstructorsAllowed(), authProvider: credentials.providerName(), autoProvisionDomains: AUTO_PROVISION() ? autoProvisionDomains() : [] } }));
 
 // @desc    Login user (one login for every role; the role comes from the database)
 // @route   POST /api/auth/login
@@ -147,25 +154,39 @@ router.post('/login', async (req, res) => {
 
     const key = loginKey(req, email);
     if (loginBlocked(key)) return res.status(429).json({ success: false, message: 'Too many sign-in attempts. Please wait a few minutes and try again.' });
+
+    const demo = demoEnabled();
     let user = await User.findOne({ email });
-    let provisioned = false, demoBypass = false;
-    if (demoEnabled()) {
-      // Demo mode: any valid email and any non-empty password. The role still comes from the database.
-      if (!user) { const r = await provisionDemoStudent(email); user = r.user; provisioned = r.created; demoBypass = !!user; }
+    let provisioned = false, demoBypass = false, verdict = null;
+
+    if (!user && demo) {
+      // Onboarding: a new email becomes a Student. Roles are never granted here; only an admin can change them.
+      const r = await provisionDemoStudent(email);
+      user = r.user; provisioned = r.created; demoBypass = !!user;
+    } else if (!user && AUTO_PROVISION() && isAutoProvisionEmail(email) && initialPasswordFor(email).length >= 2 && password === initialPasswordFor(email)) {
+      const r = await provisionStudent(email);
+      user = r.user; provisioned = r.created;
+    }
+
+    if (user && !demoBypass) {
+      const role = user.role === 'faculty' ? 'instructor' : user.role;
+      // Onboarding access (any password) exists ONLY for accounts that have no permanent password yet, and never for admins.
+      const onboarding = demo && !credentials.passwordSetupComplete(user)
+        && (role === 'student' || (role === 'instructor' && demoInstructorsAllowed()) || demoPrivilegedAllowed());
+      if (onboarding && !credentials.hasCredential(user)) demoBypass = true;
       else {
-        const userRole = user.role === 'faculty' ? 'instructor' : user.role;
-        if (userRole === 'student' || (userRole === 'instructor' && demoInstructorsAllowed()) || demoPrivilegedAllowed()) demoBypass = true;
+        verdict = await credentials.verify(user, password);
+        // An onboarding account whose administrator-issued initial password is typed correctly gets a normal session;
+        // anything else opens an onboarding session.
+        if (onboarding) demoBypass = !verdict.ok;
       }
     }
-    if (!user && !demoBypass && AUTO_PROVISION() && isAutoProvisionEmail(email) && initialPasswordFor(email).length >= 2 && password === initialPasswordFor(email)) {
-      const result = await provisionStudent(email);
-      user = result.user; provisioned = result.created;
-    }
-    // Same message for an unknown email and a wrong password, so accounts cannot be probed.
-    const isMatch = demoBypass ? true : (user ? await bcrypt.compare(password, user.password) : false);
-    if (!user || !isMatch) {
+
+    if (!user || (!demoBypass && !(verdict && verdict.ok))) {
       loginFailed(key);
-      if (demoEnabled() && user) return res.status(401).json({ success: false, message: demoInstructorsAllowed() ? 'Demo mode: administrator accounts still need their real password.' : 'Demo mode: instructor and admin accounts still need their real password.' });
+      if (verdict && verdict.reason === 'throttled') return res.status(429).json({ success: false, message: 'Too many sign-in attempts. Please wait a few minutes and try again.' });
+      if (verdict && verdict.reason === 'disabled') return res.status(403).json({ success: false, message: 'Your account is currently inactive. Contact the administrator.' });
+      if (demo && user && user.role === 'admin') return res.status(401).json({ success: false, message: 'Demo mode: administrator accounts still need their real password.' });
       return res.status(401).json({ success: false, message: 'Incorrect email or password.' });
     }
 
@@ -179,37 +200,86 @@ router.post('/login', async (req, res) => {
 
     failedLogins.delete(key);
     const token = getSignedJwtToken(user._id, demoBypass ? { demo: true } : {});
-    res.status(200).json({ success: true, provisioned, message: demoBypass ? (provisioned ? 'Demo mode: a student account was created for you.' : 'Demo mode: signing you in.') : provisioned ? 'Welcome to LearnPool! Your student account was created. Please choose a new password.' : 'Redirecting to your dashboard.', demo: demoBypass, token, user: demoBypass ? { ...publicUser(user), mustChangePassword: false } : publicUser(user) });
+    res.status(200).json({
+      success: true, provisioned, demo: demoBypass, token,
+      message: demoBypass ? (provisioned ? 'Demo mode: a student account was created for you.' : 'Demo mode: signing you in.') : provisioned ? 'Welcome to LearnPool! Your student account was created. Please choose a new password.' : 'Redirecting to your dashboard.',
+      user: { ...publicUser(user), ...(demoBypass ? { mustChangePassword: false } : {}), passwordMode: passwordModeFor(user, demoBypass), passwordSetupComplete: credentials.passwordSetupComplete(user) },
+    });
   } catch (err) {
+    if (err && err.expose) return res.status(err.status).json({ success: false, message: err.message });
     res.status(500).json({ success: false, message: 'We could not sign you in. Please try again.' });
   }
 });
 
-// @desc    Change own password (required on first login)
+const strongEnough = (password, user) => {
+  if (password.length < 8) return 'Choose a password with at least 8 characters.';
+  if (password.length > 128) return 'Choose a shorter password (up to 128 characters).';
+  if (password.toLowerCase() === initialPasswordFor(user.email).toLowerCase()) return 'Your password cannot be the same as your email username.';
+  return '';
+};
+
+// @desc    Create the first permanent password (onboarding sessions only; no current password exists to check)
+// @route   POST /api/auth/set-password
+// @access  Private (onboarding / demo session)
+router.post('/set-password', protect, async (req, res) => {
+  try {
+    if (!req.demoSession) return res.status(403).json({ success: false, code: 'NOT_ONBOARDING', message: 'Your account already has a password. Use Change password and enter your current password.' });
+    const account = await User.findById(req.user.id);
+    if (!account) return res.status(404).json({ success: false, message: 'User not found.' });
+    if (credentials.passwordSetupComplete(account)) return res.status(409).json({ success: false, message: 'This account already has a permanent password. Sign in with it to change it.' });
+    const newPassword = typeof req.body.newPassword === 'string' ? req.body.newPassword : '';
+    const confirmPassword = typeof req.body.confirmPassword === 'string' ? req.body.confirmPassword : '';
+    if (!newPassword || !confirmPassword) return res.status(400).json({ success: false, message: 'Enter and confirm your new password.' });
+    if (newPassword !== confirmPassword) return res.status(400).json({ success: false, message: 'The passwords do not match.' });
+    const weak = strongEnough(newPassword, account);
+    if (weak) return res.status(400).json({ success: false, message: weak });
+
+    await credentials.setPassword(account, newPassword);   // Firebase Authentication (or a bcrypt hash in local mode)
+    account.passwordSetupComplete = true;
+    account.isDemo = false;
+    account.mustChangePassword = false;
+    await account.save();
+    await LmsItem.create({ type: 'audit-logs', owner: account._id, data: { action: 'password.set', targetId: String(account._id) } }).catch(() => {});
+    // The onboarding session is replaced by a normal one.
+    res.status(200).json({ success: true, message: 'Your permanent password is set. Use it the next time you sign in.', token: getSignedJwtToken(account._id), user: { ...publicUser(account), passwordMode: 'change', passwordSetupComplete: true } });
+  } catch (err) {
+    if (err && err.expose) return res.status(err.status).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: 'We could not save your password. Please try again.' });
+  }
+});
+
+// @desc    Change an existing password (the current one is re-checked, with Firebase when it is the provider)
 // @route   POST /api/auth/change-password
 // @access  Private
 router.post('/change-password', protectAllowPasswordChange, async (req, res) => {
   try {
+    const account = await User.findById(req.user.id);
+    if (!account) return res.status(404).json({ success: false, message: 'User not found.' });
+    if (req.demoSession) return res.status(409).json({ success: false, code: 'SET_PASSWORD_FIRST', message: DEMO_PASSWORD_MESSAGE });
     const currentPassword = typeof req.body.currentPassword === 'string' ? req.body.currentPassword : '';
     const newPassword = typeof req.body.newPassword === 'string' ? req.body.newPassword : '';
     const confirmPassword = typeof req.body.confirmPassword === 'string' ? req.body.confirmPassword : newPassword;
     if (!currentPassword || !newPassword) return res.status(400).json({ success: false, message: 'Enter your current password and a new password.' });
     if (newPassword !== confirmPassword) return res.status(400).json({ success: false, message: 'The new passwords do not match.' });
-    if (newPassword.length < 8) return res.status(400).json({ success: false, message: 'Choose a new password with at least 8 characters.' });
-    if (newPassword.length > 128) return res.status(400).json({ success: false, message: 'Choose a shorter password (up to 128 characters).' });
+    const weak = strongEnough(newPassword, account);
+    if (weak) return res.status(400).json({ success: false, message: weak.replace('Your password', 'Your new password') });
+    if (!credentials.hasCredential(account)) return res.status(409).json({ success: false, message: 'This account has no password yet. Sign in and use Set Your Password in Settings.' });
 
-    const user = await User.findById(req.user.id);
-    if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
-    if (!(await bcrypt.compare(currentPassword, user.password))) return res.status(401).json({ success: false, message: 'Your current password is incorrect.' });
+    const check = await credentials.verify(account, currentPassword);
+    if (!check.ok) {
+      if (check.reason === 'throttled') return res.status(429).json({ success: false, message: 'Too many attempts. Please wait a few minutes and try again.' });
+      return res.status(401).json({ success: false, message: 'Your current password is incorrect.' });
+    }
     if (newPassword === currentPassword) return res.status(400).json({ success: false, message: 'Your new password must be different from the current one.' });
-    if (newPassword.toLowerCase() === initialPasswordFor(user.email).toLowerCase()) return res.status(400).json({ success: false, message: 'Your new password cannot be the same as your initial password.' });
 
-    user.password = await bcrypt.hash(newPassword, 12);
-    user.mustChangePassword = false;
-    user.passwordChangedAt = new Date();
-    await user.save();
-    res.status(200).json({ success: true, message: 'Your password has been updated.', user: publicUser(user) });
+    await credentials.setPassword(account, newPassword);
+    account.mustChangePassword = false;
+    account.passwordSetupComplete = true;
+    account.isDemo = false;
+    await account.save();
+    res.status(200).json({ success: true, message: 'Your password has been updated.', user: { ...publicUser(account), passwordMode: 'change', passwordSetupComplete: true } });
   } catch (err) {
+    if (err && err.expose) return res.status(err.status).json({ success: false, message: err.message });
     res.status(500).json({ success: false, message: 'We could not update your password. Please try again.' });
   }
 });
@@ -299,6 +369,7 @@ router.get('/me', protectAllowPasswordChange, async (req, res) => {
   try {
     const user = await User.findById(req.user.id).select('-password -otpCode -otpExpiry').populate('enrolledCourses', 'title');
     if (user && req.demoSession) user.mustChangePassword = false;   // demo sessions have no initial password to change
+    if (user) { user.passwordMode = passwordModeFor(user, req.demoSession); user.passwordSetupComplete = credentials.passwordSetupComplete(user); }
     res.status(200).json({ success: true, data: user });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });

@@ -69,26 +69,29 @@
 ### 🔐 Authentication and login
 
 - **One common login page** for every role — no role-selection cards and **no public registration**.
-- **Automatic role identification:** the role (student / instructor / admin) is read from the database after sign-in.
-- **Automatic dashboard redirection:** `/student/dashboard`, `/instructor/dashboard` or `/admin/dashboard`.
-- **Accounts are created by an administrator** (Admin → User management → *Add new user*). The initial password is the part of the e-mail before `@`; only its bcrypt hash is stored, and the user **must change it at first sign-in** (the backend blocks every other request until they do).
-- **Optional automatic student accounts:** a first sign-in with the e-mail username as password creates a *Student* account, limited to configured domains (default `@mlrit.ac.in`).
+- **Automatic role identification and redirection:** the role (student / instructor / admin) is read from the user's Firestore record after sign-in and decides the dashboard: `/student/dashboard`, `/instructor/dashboard` or `/admin/dashboard`. It is never taken from the e-mail address or the page.
+- **First sign-in = onboarding (demo mode only):** any valid e-mail and any password creates a **Student** account (nothing is stored from the typed password) or opens an existing account that has **not yet set a permanent password**. Roles are never granted this way.
+- **Set Your Password (Settings):** after onboarding every user creates their own permanent password (new + confirm; there is no "current password" because none exists yet). It is saved in **Firebase Authentication** — or as a bcrypt hash if Firebase Authentication is not configured — and from then on **that password is required, even in demo mode**. Signing out and in again with the same e-mail and password works.
+- **Change password:** accounts that already have a permanent password must enter the current one (re-checked with Firebase Authentication) before choosing a new one.
+- **Admins control roles:** every new account starts as *Student*. Only an administrator can switch a user to *Instructor* (or back), and the same e-mail and password open the Instructor Dashboard at the next sign-in. Users cannot change their own role.
+- **Accounts can also be created by an administrator** (Admin → User management → *Add new user*). The initial password is the part of the e-mail before `@`, and the user must change it at first sign-in.
+- **Optional automatic student accounts** for e-mails on domains you list in `AUTO_PROVISION_DOMAINS` (first sign-in with the e-mail username as the password).
 - **Any e-mail domain is allowed by default** for students and instructors (configurable with `ALLOWED_EMAIL_DOMAINS`).
 - **Forgot / reset password** by e-mail link (needs SMTP settings; skipped silently when SMTP is not configured).
-- **Demo login mode** (testing only — see below).
+- **Existing accounts keep working:** an older bcrypt password moves into Firebase Authentication automatically the first time its owner signs in with it.
 
-#### Demo login vs. production authentication
+#### Demo / onboarding vs. production authentication
 
-| | **Demo login** (`DEMO_LOGIN_MODE=true`) | **Production authentication** |
+| | **Demo / onboarding** (`DEMO_LOGIN_MODE=true`) | **Production** |
 |---|---|---|
-| Purpose | Quick testing and demonstrations | Real use |
-| Password check | **Not verified** for students (and instructors if `DEMO_ALLOW_INSTRUCTORS=true`) | Always verified against the bcrypt hash |
-| Unknown e-mail | A **Student** account is created automatically | Rejected ("Incorrect email or password") unless automatic student accounts apply |
-| Existing account | Signs in with its **real role from the database** | Signs in only with the correct password |
-| Admin accounts | **Always need their real password** | Real password |
+| Any e-mail + any password | **New e-mail → Student account.** Existing student / instructor accounts open this way **only until they set a permanent password** | Not available |
+| Account that has a permanent password | Password required | Password required |
+| Administrator accounts | **Always need their real password** | Real password |
+| Creating the first password | *Settings → Set Your Password* (no current password) | Administrator-issued initial password or e-mailed reset link |
+| Roles | Student by default; only an admin changes them | Same |
 | Availability | **Forced off when `NODE_ENV=production`**, whatever the setting says | — |
 
-> ⚠️ **Demo login is for testing only and is not secure authentication.** Anyone who knows a student's e-mail can sign in as that student while it is on. It never grants admin access, and it is disabled in production mode. Set `DEMO_LOGIN_MODE=false` (or remove it) for real use.
+> ⚠️ **Demo / onboarding login is for testing only and is not secure authentication.** While it is on, anyone who types an e-mail that has not yet set a permanent password can claim that account by setting the first password. It never grants admin access, it ends for an account as soon as a permanent password exists, and it is disabled in production. Set `DEMO_LOGIN_MODE=false` (or remove it) for real use.
 
 ### 🧑‍🎓 Student dashboard
 
@@ -179,7 +182,7 @@ Only technologies that are actually used are listed.
 | Backend runtime | **Node.js** | 20.19+ recommended |
 | Backend framework | **Express** | 5 |
 | Database | **Cloud Firestore** through **`firebase-admin`** | 13 |
-| Authentication | **JWT** (`jsonwebtoken`, 30-day tokens) + **bcryptjs** passwords | 9 / 3 |
+| Authentication | **JWT** sessions (`jsonwebtoken`, 30-day) + passwords in **Firebase Authentication** through `firebase-admin` — or **bcryptjs** hashes when Firebase Authentication is not configured | 9 / 13 / 3 |
 | File uploads | `multer` (files kept on the backend's disk) | 2 |
 | PDF generation | **PDFKit** | 0.18 |
 | E-mail | `nodemailer` (optional SMTP) | 8 |
@@ -187,7 +190,7 @@ Only technologies that are actually used are listed.
 | Real-time | `socket.io` (server side, live-class chat events) | 4 |
 | Dev tooling | `nodemon`, `eslint` | 3 / 10 |
 
-**Firebase services that are *not* used:** Firebase Authentication, Firebase Storage, Firebase Hosting, Firebase Cloud Functions and the Realtime Database. Sign-in is handled by LearnPool's own Express API; the Firebase **web SDK is not used** — there are no `VITE_FIREBASE_*` variables.
+**Firebase services:** Cloud Firestore (all data) and **Firebase Authentication** (permanent passwords, once you set `FIREBASE_WEB_API_KEY`). **Not used:** Firebase Storage, Firebase Hosting, Cloud Functions, the Realtime Database and the Firebase web SDK — the browser only talks to LearnPool's own API, so there are no `VITE_FIREBASE_*` variables.
 
 ---
 
@@ -210,7 +213,7 @@ flowchart LR
 | **Credentials** | The backend authenticates to Firestore with a **service-account key** (`backend/serviceAccountKey.json`, or `FIREBASE_SERVICE_ACCOUNT_JSON`, or three `FIREBASE_*` variables). The key never reaches the browser. |
 | **Data layer** | `backend/db/` is a small Mongoose-style layer (schemas, `find`, `populate`, `save`, …) on top of Firestore, so the routes read like ordinary model code. See [Database structure](#8-database-structure). |
 | **Security rules** | `firestore.rules` denies **all** direct client access. This is safe because only the backend (Admin SDK, which bypasses rules) talks to Firestore. |
-| **Authentication** | LearnPool JWTs — not Firebase Authentication. |
+| **Authentication** | LearnPool JWT sessions. Passwords are **set** with the Admin SDK and **checked** by Firebase Authentication's own sign-in (using `FIREBASE_WEB_API_KEY`); the Firebase user id equals the Firestore user document id. Without a web API key LearnPool falls back to bcrypt hashes in Firestore. Roles always come from Firestore. |
 | **File storage** | Local disk on the backend server: `backend/uploads/` (avatars, lessons, submissions, files) and `backend/storage/certificates/` (certificate PDFs). Firebase Storage is **not** used. |
 | **Hosting** | Not configured (there is no `firebase.json`). See [Deployment](#12-deployment). |
 
@@ -295,10 +298,8 @@ cd <your-repository>
 ```bash
 cd backend
 npm install
-npm run dev
 cd ../frontend
 npm install
-npm run dev
 ```
 
 ### 3) Create the Firebase project and database
@@ -309,7 +310,17 @@ npm run dev
    - **Production mode** is fine — the backend uses admin access and `firestore.rules` denies direct client access.
 3. Open **Project settings → Service accounts → Generate new private key** and save the downloaded file as **`backend/serviceAccountKey.json`**. This file is a secret — never commit or share it (it is already in `.gitignore`).
 
-> You do **not** need to register a web app, enable Authentication, Storage or Hosting — LearnPool does not use them.
+> You do **not** need to register a web app or enable Storage or Hosting — LearnPool does not use them.
+
+#### Turn on Firebase Authentication (recommended)
+
+This is what stores permanent passwords. Without it LearnPool still works, but passwords are kept as bcrypt hashes in Firestore.
+
+1. In the Firebase console open **Authentication → Get started → Sign-in method** and enable **Email/Password**.
+2. Open **Project settings → General** and copy the **Web API Key**. Put it in `backend/.env` as `FIREBASE_WEB_API_KEY=...` (see [Environment variables](#7-environment-variables)).
+3. Recommended: in **Authentication → Settings → User actions** turn **off** "Enable create (sign-up)" so nobody can register Firebase accounts directly — LearnPool creates them itself on the backend.
+4. Recommended: in Google Cloud **APIs & Services → Credentials**, restrict that API key to the *Identity Toolkit API*.
+5. Restart the backend. `GET http://localhost:5000/api/auth/config` should now show `"authProvider":"firebase"`.
 
 ### 4) Configure the environment
 
@@ -381,7 +392,7 @@ npm run lint           # optional: ESLint
 |---|---|---|
 | `backend` | `npm run dev` | Start the API with auto-restart (nodemon) |
 | `backend` | `npm start` | Start the API with plain Node |
-| `backend` | `npm test` | Offline smoke test of the Firestore data layer (no Firebase needed) |
+| `backend` | `npm test` | Offline tests: the Firestore data layer and the credential layer, including a fake Firebase Authentication (no Firebase project needed) |
 | `backend` | `npm run create-admin` | Create an administrator (needs `ADMIN_*` variables) |
 | `backend` | `npm run backup` | Save every collection to `backend/backups/*.json` |
 | `backend` | `npm run migrate:mongo` | One-time copy from an old MongoDB database (needs `npm install --no-save mongodb`) |
@@ -402,17 +413,20 @@ Copy from [`backend/.env.example`](backend/.env.example). Never commit the real 
 |---|---|---|
 | `PORT` | no (5000) | API port |
 | `JWT_SECRET` | **yes** | Secret used to sign login tokens — use 32+ random characters |
+| `AUTH_PROVIDER` | no (`auto`) | Where passwords live: `firebase`, `local` (bcrypt hash in Firestore) or `auto` (Firebase once `FIREBASE_WEB_API_KEY` is set) |
+| `FIREBASE_WEB_API_KEY` | for Firebase Authentication | Firebase console → Project settings → General → Web API Key. Lets the backend check passwords with Firebase |
+| `FIREBASE_AUTH_EMULATOR_HOST` | no | Use the local Firebase Auth emulator, e.g. `127.0.0.1:9099` |
 | `CLIENT_ORIGIN` | yes for non-local use | Allowed browser origin(s) for CORS (comma-separated). Default `http://localhost:5173` |
 | `PUBLIC_APP_URL` | recommended | Public address of the frontend; used in certificate verification links |
 | `FIREBASE_SERVICE_ACCOUNT_PATH` | one of 3 ways | Path to the service-account JSON (default `backend/serviceAccountKey.json`) |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | one of 3 ways | The key JSON (or its base64) — handy on hosting providers |
 | `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY` | one of 3 ways | The three values from the key file |
 | `FIRESTORE_EMULATOR_HOST` | no | Use the local Firestore emulator, e.g. `127.0.0.1:8080` |
-| `ALLOWED_EMAIL_DOMAINS` | no (`*`) | Which e-mails may be students/instructors: `*` or e.g. `@mlrit.ac.in,@gmail.com` |
-| `AUTO_PROVISION_STUDENTS` | no (`true`) | Allow automatic student accounts on first sign-in (password = e-mail username) |
-| `AUTO_PROVISION_DOMAINS` | no (`@mlrit.ac.in`) | Domains for those automatic accounts |
-| `DEMO_LOGIN_MODE` | no (off) | `true` = any e-mail + any password (testing only; **ignored when `NODE_ENV=production`**) |
-| `DEMO_ALLOW_INSTRUCTORS` | no (off) | Let instructors also sign in with any password in demo mode |
+| `ALLOWED_EMAIL_DOMAINS` | no (`*`) | Which e-mails may be students/instructors: `*` or e.g. `@college.edu,@gmail.com` |
+| `AUTO_PROVISION_DOMAINS` | no (empty = off) | Domains whose first sign-in (password = e-mail username) may create a Student account, e.g. `@yourcollege.edu` |
+| `AUTO_PROVISION_STUDENTS` | no (`true`) | Set `false` to switch automatic student accounts off even when domains are listed |
+| `DEMO_LOGIN_MODE` | no (off) | `true` = onboarding access: any e-mail + any password opens a new student, or an account with no permanent password yet (testing only; **ignored when `NODE_ENV=production`**) |
+| `DEMO_ALLOW_INSTRUCTORS` | no (on while demo mode is on) | Instructors can use onboarding access (any password) until they set a permanent password. Set `false` to require a real password from instructors |
 | `DEMO_ALLOW_PRIVILEGED_ACCOUNTS` | no (off) | Would also open admin accounts — **keep `false`** |
 | `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USER`, `EMAIL_PASS`, `EMAIL_FROM` | optional | SMTP for password-reset and notification e-mails (`SMTP_*`, `FROM_*` names also work) |
 | `GEMINI_API_KEY` | optional | Enables the AI tutor chatbot |
@@ -440,7 +454,7 @@ LearnPool uses **Cloud Firestore**. Each model is one top-level collection; docu
 
 | Collection | Important fields |
 |---|---|
-| **`users`** | `name`, `email` (unique, lower-case), `password` (bcrypt hash), `role` (`student` / `instructor` / `faculty` / `admin`), `status` (`active` / `suspended` / `disabled`), `isApproved`, `isVerified`, `mustChangePassword`, `isDemo`, `teacherCode`, `profilePicture` (path), `phoneNumber`, `bio`, `skills[]`, `interests[]`, `enrolledCourses[]`, `points`, `studySeconds`, `preferences`, `lastActive`, `passwordChangedAt` · hidden fields: `otpCode`, `otpExpiry`, `passwordResetToken`, `passwordResetExpiry` |
+| **`users`** | `name`, `email` (unique, lower-case), `credentialProvider` (`firebase` / `local`), `passwordSetupComplete`, `password` (bcrypt hash — **only** in local mode; absent when Firebase Authentication holds the password), `role` (`student` / `instructor` / `faculty` / `admin`), `status` (`active` / `suspended` / `disabled`), `isApproved`, `isVerified`, `mustChangePassword`, `isDemo`, `teacherCode`, `profilePicture` (path), `phoneNumber`, `bio`, `skills[]`, `interests[]`, `enrolledCourses[]`, `points`, `studySeconds`, `preferences`, `lastActive`, `passwordChangedAt` · hidden fields: `otpCode`, `otpExpiry`, `passwordResetToken`, `passwordResetExpiry` |
 | **`courses`** | `title`, `description`, `category`, `level` (`Beginner`/`Intermediate`/`Advanced`), `status` (`draft`/`published`/`archived`), `thumbnail`, `duration`, `faculty` → users, `modules[]`, `students[]`, `updatedBy`, timestamps |
 | **`modules`** | `title`, `course` → courses, `lectures[]`, `topics[]`, `tests[]`, `liveSessions[]`, `updatedBy` |
 | **`topics`** | `title`, `description`, `module`, `lectures[]`, `tests[]`, `updatedBy` |
@@ -540,12 +554,13 @@ All changes are saved to Cloud Firestore through the backend API (`PUT`/`PATCH` 
 
 ### ✅ Implemented
 
-- **Passwords:** bcrypt hashes only; plain text is never stored. First-login password change is enforced by the backend.
+- **Passwords:** stored and verified by **Firebase Authentication** when configured (no password or hash in Firestore), otherwise as bcrypt hashes; plain text is never stored and nothing password-related goes into `localStorage`. First-login password change is enforced by the backend.
 - **Sessions:** signed JWT (30-day), sent as a Bearer token; account status (`active`) is re-checked on each request.
 - **Role-based access control** on the backend (`protect` + role checks) — hiding a button is never the only protection. Students cannot use instructor/admin APIs; instructors cannot use admin APIs; users cannot change their own role.
 - **Certificate approval authorization:** only the course's own instructor or an admin can approve/reject; students can never approve; completion is re-verified on approval; only admins can revoke.
 - **Login throttling:** repeated wrong passwords from the same IP and e-mail are slowed down.
-- **Demo mode limits:** off by default, forced off in production, never opens admin accounts, creates students only.
+- **Demo / onboarding limits:** off by default, forced off in production, never opens admin accounts, creates students only, stops working for an account the moment it has a permanent password, and its tokens are rejected from then on.
+- **Roles:** read from Firestore on every request (no role is trusted from the browser); only an administrator can change a role.
 - **Firestore rules:** `firestore.rules` denies all direct client reads/writes; the backend alone accesses data with a service account.
 - **File upload restrictions:**
   - Profile pictures: JPG / PNG / WebP only, **max 2 MB**, file type checked by content.
@@ -572,7 +587,7 @@ LearnPool has **two parts** that are deployed separately: the **React build** (s
 
 ### Backend (Node.js host)
 
-1. Provide the environment variables from [section 7](#7-environment-variables) on your host — especially `NODE_ENV=production`, a strong `JWT_SECRET`, `CLIENT_ORIGIN` (your frontend address), `PUBLIC_APP_URL`, and the Firebase credentials via `FIREBASE_SERVICE_ACCOUNT_JSON` (or the three `FIREBASE_*` variables).
+1. Provide the environment variables from [section 7](#7-environment-variables) on your host — especially `NODE_ENV=production`, a strong `JWT_SECRET`, `FIREBASE_WEB_API_KEY`, `CLIENT_ORIGIN` (your frontend address), `PUBLIC_APP_URL`, and the Firebase credentials via `FIREBASE_SERVICE_ACCOUNT_JSON` (or the three `FIREBASE_*` variables).
 2. Make sure `DEMO_LOGIN_MODE` is **not** `true` (it is ignored in production anyway).
 3. Run `npm install` then `npm start` in `backend/`.
 4. Give the server a **persistent disk** for `backend/uploads/` and `backend/storage/` — uploaded files and certificate PDFs are stored there (see *Recommended improvements*).
@@ -615,6 +630,11 @@ firebase deploy --only firestore:rules  # rules only
 | Backend says the Firebase key is missing / `PERMISSION_DENIED` | Put the key at `backend/serviceAccountKey.json` (or set `FIREBASE_SERVICE_ACCOUNT_JSON`). Re-download it if it was revoked. |
 | API returns **503 "Database is not connected"** | The backend started but could not reach Firestore. Check the terminal for the connection error and your internet connection. |
 | Terminal never prints `Firestore connected` | Wrong credentials or no database yet (see above). Check `JWT_SECRET` is also set. |
+| Settings shows **Set Your Password** instead of *Change password* | You are in an onboarding session (no permanent password yet). Create one there; afterwards sign in with it. |
+| "Firebase Authentication is not turned on for this project" | Console → Authentication → Get started → Sign-in method → enable **Email/Password**, then try again. |
+| "FIREBASE_WEB_API_KEY is not set" / "not valid for this Firebase project" | Copy the Web API Key from Project settings → General into `backend/.env` (or set `AUTH_PROVIDER=local`) and restart the backend. |
+| "could not reach Firebase Authentication" | Check your internet connection; the backend calls Google's servers to check passwords. |
+| An instructor cannot sign in after being promoted | They sign in with the same e-mail and password. If they never set a permanent password, demo mode lets any password in; otherwise ask an admin to use *User Management → Reset password*. |
 | Login says "Incorrect email or password" | Normal when the account does not exist or the password is wrong. For testing set `DEMO_LOGIN_MODE=true`, then type `rs` in the nodemon window. Open `http://localhost:5000/api/auth/config` — it must show `"demoMode":true`. |
 | Demo mode stays `false` | `.env` edits need a restart (`rs`); the line must be exactly `DEMO_LOGIN_MODE=true`; and `NODE_ENV` must not be `production`. |
 | "Please change your initial password" | Expected for admin-created accounts — sign in and choose a new password. |
@@ -644,11 +664,11 @@ No screenshots are committed to this repository yet. To add them, save images (f
 
 ```bash
 cd backend
-npm test            # offline smoke test of the Firestore data layer (uses an in-memory store)
+npm test            # offline tests: data layer + credential layer (in-memory fakes, incl. Firebase Authentication)
 npm run backup      # JSON backup of all collections → backend/backups/
 ```
 
-`npm test` verifies the data layer (queries, populate, saves, unique rules, atomic increments) without needing a Firebase project. It does not exercise the HTTP routes; there is no automated frontend test suite.
+`npm test` verifies the data layer (queries, populate, saves, unique rules, atomic increments) and the credential layer (setting and verifying passwords in Firebase mode and local mode, moving old hashes into Firebase, e-mail changes, error messages) without needing a Firebase project. The fake Firebase Authentication is a test double, so a real Firebase check still needs your own project. It does not exercise the HTTP routes; there is no automated frontend test suite.
 
 ---
 
@@ -656,7 +676,7 @@ npm run backup      # JSON backup of all collections → backend/backups/
 
 These are **ideas, not implemented features**:
 
-- Sign-in with Firebase Authentication or Google, plus e-mail verification and multi-factor authentication.
+- Sign in with Google and multi-factor authentication through Firebase Authentication, plus e-mail verification for new accounts.
 - Move file storage to Firebase Storage / Google Cloud Storage and serve certificate PDFs from it.
 - Firebase Hosting + Cloud Run / Cloud Functions configuration for one-command deployment.
 - A live-class video screen (the backend already has chat events) and an instructor analytics dashboard.

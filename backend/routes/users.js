@@ -3,11 +3,11 @@ const User = require('../models/User');
 const { protect, authorize } = require('../middleware/auth');
 
 const router = express.Router();
-const bcrypt = require('bcryptjs');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const credentials = require('../utils/credentials');
 const { ASSIGNABLE_ROLES, normalizeEmail, isAllowedEmail, emailRuleMessage, initialPasswordFor, generateTeacherCode } = require('../utils/accounts');
 
 // ---- Profile pictures -------------------------------------------------------
@@ -45,6 +45,7 @@ const removeAvatarFile = url => {
 const safeUser = user => {
   const o = typeof user.toObject === 'function' ? user.toObject() : { ...user };
   for (const k of ['password', 'otpCode', 'otpExpiry', 'passwordResetToken', 'passwordResetExpiry']) delete o[k];
+  o.passwordSetupComplete = credentials.passwordSetupComplete(user);
   return o;
 };
 const audit = (req, data) => require('../models/LmsItem').create({ type: 'audit-logs', owner: req.user._id, data }).catch(() => {});
@@ -67,7 +68,7 @@ router.get('/teachers', protect, async (req, res) => {
 router.get('/', protect, authorize('admin'), async (req, res) => {
   try {
     const users = await User.find().select('-password -otpCode -otpExpiry').sort('-createdAt').limit(500);
-    res.status(200).json({ success: true, data: users });
+    res.status(200).json({ success: true, data: users.map(u => Object.assign(u.toObject(), { passwordSetupComplete: credentials.passwordSetupComplete(u) })) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -175,6 +176,7 @@ router.delete('/:id', protect, authorize('admin'), async (req, res) => {
       return res.status(400).json({ success: false, message: 'Cannot delete an admin' });
     }
 
+    await credentials.removeCredential(user);
     await User.findByIdAndDelete(req.params.id);
     await audit(req, { action: 'user.deleted', targetId: String(req.params.id), email: user.email });
     res.status(200).json({ success: true, data: {} });
@@ -236,20 +238,8 @@ router.put('/profile', protect, async (req, res) => {
     if (skills) user.skills = Array.isArray(skills) ? skills : skills.split(',').map(s => s.trim());
     if (interests) user.interests = Array.isArray(interests) ? interests : interests.split(',').map(i => i.trim());
     
-    // Password Update
-    if (newPassword) {
-      if (!oldPassword) {
-        return res.status(400).json({ success: false, message: 'Please provide old password to update password' });
-      }
-      const isMatch = await bcrypt.compare(oldPassword, user.password);
-      if (!isMatch) {
-        return res.status(401).json({ success: false, message: 'Incorrect old password' });
-      }
-      const salt = await bcrypt.genSalt(10);
-      user.password = await bcrypt.hash(newPassword, salt);
-      user.mustChangePassword = false;
-      user.passwordChangedAt = new Date();
-    }
+    // Passwords are changed only through /api/auth/set-password and /api/auth/change-password.
+    if (newPassword) return res.status(400).json({ success: false, message: 'Use Settings \u2192 Password to set or change your password.' });
 
     await user.save();
     
@@ -277,15 +267,16 @@ router.post('/', protect, authorize('admin'), async (req, res, next) => {
     if (!isAllowedEmail(email)) return res.status(400).json({ success: false, message: emailRuleMessage() });
     if (await User.findOne({ email })) return res.status(409).json({ success: false, message: 'An account with this email already exists.' });
 
-    // Initial password = the email username; only its bcrypt hash is stored.
-    const password = await bcrypt.hash(initialPasswordFor(email), 12);
-    const data = { name, email, password, role, status: 'active', isApproved: true, isVerified: true, mustChangePassword: true };
+    // Initial password = the email username, stored by the credential provider (Firebase Authentication or a hash).
+    const data = { name, email, role, status: 'active', isApproved: true, isVerified: true, mustChangePassword: true, passwordSetupComplete: false };
     if (role === 'instructor') {
       let code = generateTeacherCode();
       if (await User.findOne({ teacherCode: code })) code = generateTeacherCode();
       data.teacherCode = code;
     }
     const user = await User.create(data);
+    try { await credentials.setPassword(user, initialPasswordFor(email)); await user.save(); }
+    catch (e) { await user.deleteOne(); if (e && e.expose) return res.status(e.status).json({ success: false, message: e.message }); throw e; }
     await audit(req, { action: 'user.created', targetId: String(user._id), role, email });
     res.status(201).json({ success: true, message: 'Account created. The initial password is the part of the email before @.', data: safeUser(user) });
   } catch (e) {
@@ -301,9 +292,10 @@ router.post('/:id/reset-password', protect, authorize('admin'), async (req, res,
     const user = await User.findById(req.params.id);
     if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
     if (user.role === 'admin') return res.status(400).json({ success: false, message: 'Administrator passwords cannot be reset here.' });
-    user.password = await bcrypt.hash(initialPasswordFor(user.email), 12);
+    try { await credentials.setPassword(user, initialPasswordFor(user.email)); } catch (e) { if (e && e.expose) return res.status(e.status).json({ success: false, message: e.message }); throw e; }
+    user.isDemo = false;   // the account now has a real (initial) password
+    user.passwordSetupComplete = false;
     user.mustChangePassword = true;
-    user.passwordChangedAt = new Date();
     await user.save();
     await audit(req, { action: 'user.password_reset', targetId: String(user._id) });
     res.json({ success: true, message: 'Password reset to the initial password (the email username). The user must change it at next sign-in.' });
@@ -373,11 +365,13 @@ router.patch('/:id', protect, authorize('admin'), async (req, res, next) => {
       if (!isAllowedEmail(email)) return res.status(400).json({ success: false, message: emailRuleMessage() });
       if (await User.findOne({ email, _id: { $ne: String(user._id) } })) return res.status(409).json({ success: false, message: 'An account with this email already exists.' });
       user.email = email;
+      await credentials.syncEmail(user);   // the Firebase login follows the new address
     }
     await user.save();
     await audit(req, { action: 'user.updated', targetId: String(user._id) });
     res.json({ success: true, message: 'Details updated.', data: safeUser(user) });
   } catch (e) {
+    if (e && e.expose) return res.status(e.status).json({ success: false, message: e.message });
     if (e.code === 11000) return res.status(409).json({ success: false, message: 'An account with this email already exists.' });
     next(e);
   }

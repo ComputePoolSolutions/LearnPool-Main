@@ -48,8 +48,8 @@ function PasswordInput({ name, label, value, onChange, autoComplete, placeholder
 export function AuthPage({ onSuccess }) {
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [message, setMessage] = useState('');
   const [email, setEmail] = useState(''), [password, setPassword] = useState('');
-  const [demo, setDemo] = useState(false), [autoDomains, setAutoDomains] = useState([]);
-  useEffect(() => { api.get('/auth/config').then(r => { setDemo(!!r.data.data?.demoMode); setAutoDomains(r.data.data?.autoProvisionDomains || []); }).catch(() => {}); }, []);
+  const [demo, setDemo] = useState(false), [demoInstructors, setDemoInstructors] = useState(false), [autoDomains, setAutoDomains] = useState([]);
+  useEffect(() => { api.get('/auth/config').then(r => { setDemo(!!r.data.data?.demoMode); setDemoInstructors(!!r.data.data?.demoInstructors); setAutoDomains(r.data.data?.autoProvisionDomains || []); }).catch(() => {}); }, []);
 
   const submit = async event => {
     event.preventDefault();
@@ -73,7 +73,7 @@ export function AuthPage({ onSuccess }) {
       <span className="eyebrow">WELCOME BACK</span>
       <h2>Sign in to LearnPool</h2>
       <p className="muted">{demo ? 'Enter any email address and any password to try LearnPool.' : 'Use your email address and password.'}</p>
-      {demo && <div className="demo-banner" role="note"><strong>Demo mode is on.</strong> New email addresses become student accounts. Existing accounts keep their real role, and instructor and admin accounts still need their real password.</div>}
+      {demo && <div className="demo-banner" role="note"><strong>Demo mode is on.</strong> Any email address and any password opens a new student account{demoInstructors ? ', or an existing student or instructor account that has not set a permanent password yet' : ', or an existing student account that has not set a permanent password yet'}. After you set a password in Settings, that password is required to sign in. Administrator accounts always need their real password.</div>}
       {message && <div className="auth-success" role="status"><CheckCircle2 size={17} /><span>{message}</span></div>}
       <form onSubmit={submit} className="form-stack auth-form-v2" noValidate>
         <label>Email address<input type="text" inputMode="email" name="email" value={email} onChange={e => setEmail(e.target.value)} autoComplete="username" placeholder="you@example.com" autoFocus /></label>
@@ -159,7 +159,7 @@ export function UsersPage({ items, onReload, setNotice, showAdd, onCloseAdd, onO
           <td>{user.email}</td>
           <td><span className={`role-chip role-${normalizeRole(user.role)}`}>{roleLabel(user.role)}</span></td>
           <td><span className={`status-pill ${pending ? 'pending-status' : inactive ? 'suspended-status' : 'active-status'}`}>{pending ? 'Awaiting approval' : inactive ? 'Inactive' : 'Active'}</span></td>
-          <td className="user-admin-actions"><button className="button outline compact-button" onClick={() => setSelected(user._id)}>Edit</button></td>
+          <td className="user-admin-actions"><button className="button outline compact-button" onClick={() => setSelected(user._id)}>Change role</button></td>
         </tr>;
       })}</tbody></table></div>
       : <div className="empty-state"><span className="empty-icon">♙</span><strong>{users.length ? 'No users match your search' : 'No users yet'}</strong><p>{users.length ? 'Try a different name, email or filter.' : 'Use “Add new user” to create the first Student or Instructor account.'}</p></div>}
@@ -225,7 +225,7 @@ function UserDetailModal({ user, onClose, onChanged, onDeleted }) {
       <div><dt>Role</dt><dd>{roleLabel(user.role)}</dd></div>
       <div><dt>Created</dt><dd>{dateLabel(user.createdAt)}</dd></div>
       <div><dt>Last active</dt><dd>{dateLabel(user.lastActive)}</dd></div>
-      <div><dt>Password</dt><dd>{user.mustChangePassword ? 'Initial password not changed yet' : 'Set by the user'}</dd></div>
+      <div><dt>Password</dt><dd>{user.passwordSetupComplete === false ? 'Not set up yet (temporary or initial password)' : 'Permanent password set'}</dd></div>
     </dl>
     <div className="detail-section details-edit"><strong className="detail-heading">Edit details</strong>
       <div className="details-grid">
@@ -302,7 +302,8 @@ export function ProfilePicturePanel({ user, onUserUpdate, setNotice }) {
   </section>;
 }
 
-export function PasswordPanel({ setNotice }) {
+export function PasswordPanel({ setNotice, mode = 'change', onSession }) {
+  const setup = mode === 'set';   // an onboarding session: no permanent password exists yet
   const [current, setCurrent] = useState(''), [next, setNext] = useState(''), [confirm, setConfirm] = useState('');
   const [busy, setBusy] = useState(false), [error, setError] = useState('');
   const submit = async event => {
@@ -310,18 +311,31 @@ export function PasswordPanel({ setNotice }) {
     if (next.length < 8) { setError('Choose a new password with at least 8 characters.'); return; }
     if (next !== confirm) { setError('The new passwords do not match.'); return; }
     setBusy(true);
-    try { await api.post('/auth/change-password', { currentPassword: current, newPassword: next, confirmPassword: confirm }); setCurrent(''); setNext(''); setConfirm(''); setNotice('Your password has been updated.'); }
-    catch (err) { setError(errorText(err, 'We could not update your password.')); }
+    try {
+      if (setup) {
+        const { data } = await api.post('/auth/set-password', { newPassword: next, confirmPassword: confirm });
+        onSession(data.token, data.user);   // the onboarding session becomes a normal one
+        setNotice(data.message || 'Your permanent password is set.');
+      } else {
+        await api.post('/auth/change-password', { currentPassword: current, newPassword: next, confirmPassword: confirm });
+        setNotice('Your password has been updated.');
+      }
+      setCurrent(''); setNext(''); setConfirm('');
+    } catch (err) { setError(errorText(err, 'We could not save your password.')); }
     finally { setBusy(false); }
   };
   return <form className="panel settings-panel" onSubmit={submit}>
-    <span className="eyebrow">SECURITY</span><h3>Change password</h3><p>Choose a password only you know.</p>
+    <span className="eyebrow">SECURITY</span>
+    <h3>{setup ? 'Set Your Password' : 'Change password'}</h3>
+    {setup
+      ? <div className="demo-banner" role="note">You signed in with a temporary demo password, which is not a real password. Create a permanent password now; you will use it, with this email, the next time you sign in.</div>
+      : <p>Change your account password securely.</p>}
     <div className="form-stack">
-      <PasswordInput name="current" label="Current password" value={current} onChange={e => setCurrent(e.target.value)} autoComplete="current-password" />
-      <PasswordInput name="new" label="New password" value={next} onChange={e => setNext(e.target.value)} autoComplete="new-password" placeholder="At least 8 characters" />
-      <PasswordInput name="confirm" label="Confirm new password" value={confirm} onChange={e => setConfirm(e.target.value)} autoComplete="new-password" />
+      {!setup && <PasswordInput name="current" label="Current password" value={current} onChange={e => setCurrent(e.target.value)} autoComplete="current-password" />}
+      <PasswordInput name="new" label={setup ? 'New Password' : 'New password'} value={next} onChange={e => setNext(e.target.value)} autoComplete="new-password" placeholder="At least 8 characters" />
+      <PasswordInput name="confirm" label={setup ? 'Confirm Password' : 'Confirm new password'} value={confirm} onChange={e => setConfirm(e.target.value)} autoComplete="new-password" />
     </div>
     {error && <div className="error-box" role="alert">{error}</div>}
-    <button className="button primary" disabled={busy}>{busy ? 'Saving…' : 'Update password'}</button>
+    <button className="button primary" disabled={busy}>{busy ? 'Saving…' : setup ? 'Set Password' : 'Update password'}</button>
   </form>;
 }

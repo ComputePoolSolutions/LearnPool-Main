@@ -41,6 +41,7 @@ function create() {
   }
   const { initializeApp, cert, applicationDefault, getApps } = admin.app;
   const { getFirestore, FieldValue, Timestamp } = admin.fs;
+  const { getAuth } = require('firebase-admin/auth');
 
   const account = loadServiceAccount();
   const emulator = !!process.env.FIRESTORE_EMULATOR_HOST;
@@ -79,6 +80,8 @@ function create() {
   return {
     firestore: db,
     FieldValue,
+    // Firebase Authentication (used for permanent passwords when FIREBASE_WEB_API_KEY is configured)
+    get auth() { return getAuth(app); },
 
     async ping() {
       const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Timed out connecting to Firestore. Check your Firebase credentials and network.')), 15000));

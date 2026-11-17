@@ -8,6 +8,8 @@ const demoNameFromEmail = email => {
   const name = local.split(/\s+/).filter(Boolean).map(w => w[0].toUpperCase() + w.slice(1)).join(' ').slice(0, 50);
   return name.length >= 2 ? name : 'Demo Learner';
 };
-// Instructors (not admins) may also sign in without a password in demo mode when this is switched on.
-const demoInstructorsAllowed = () => demoEnabled() && (process.env.DEMO_ALLOW_INSTRUCTORS === 'true' || demoPrivilegedAllowed());
-module.exports = { demoEnabled, demoPrivilegedAllowed, demoInstructorsAllowed, demoNameFromEmail };
+// In demo mode instructors may sign in with any password (admins never can). This is ON by default
+// while demo mode is on; set DEMO_ALLOW_INSTRUCTORS=false to make instructors use their real password.
+const demoInstructorsAllowed = () => demoEnabled() && (process.env.DEMO_ALLOW_INSTRUCTORS !== 'false' || demoPrivilegedAllowed());
+const DEMO_PASSWORD_MESSAGE = 'You are signed in with the temporary demo password, which is not a real password. Use Settings \u2192 Set Your Password to create a permanent one.';
+module.exports = { demoEnabled, demoPrivilegedAllowed, demoInstructorsAllowed, demoNameFromEmail, DEMO_PASSWORD_MESSAGE };

@@ -2,7 +2,6 @@ import axios from 'axios';
 
 export const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
 export const API_ORIGIN = API_BASE.replace(/\/api\/?$/, '');
-export const INSTITUTIONAL_DOMAIN = '@mlrit.ac.in';
 
 export const api = axios.create({ baseURL: API_BASE });
 api.interceptors.request.use(config => { const token = localStorage.getItem('learnpool.token'); if (token) config.headers.Authorization = `Bearer ${token}`; return config; });

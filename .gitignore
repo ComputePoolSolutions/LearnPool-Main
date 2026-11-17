@@ -10,14 +10,26 @@ backend/serviceAccountKey.json
 serviceAccountKey.json
 backend/backups/
 backend/storage/
+frontend/dist/
+
+
+# Environment secrets
+.env
+.env.*
+!.env.example
+
+backend/.env
+backend/.env.*
+!backend/.env.example
+
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
 
 # Firebase credentials
 backend/serviceAccountKey.json
 backend/serviceAccountKey.json.json
+backend/serviceAccount*.json
 
-# Environment variables
-.env
-backend/.env
-
-# Uploaded files
+# Uploaded runtime files
 backend/uploads/

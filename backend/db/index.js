@@ -550,7 +550,7 @@ class ObjectId {
 
 module.exports = {
   Schema, model, models, Document, Query, ValidationError,
-  connect, disconnect, useStore, connection, acquireLock,
+  connect, disconnect, useStore, getStore, connection, acquireLock,
   isValidObjectId: isValidId,
   Types: { ObjectId },
   newId,
